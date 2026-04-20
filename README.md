@@ -91,8 +91,8 @@ debug: false
 
 All available config fields with their defaults are documented in `configs/example.yaml`.
 
-> [!CAUTION]
-> #### Automated script
+> [!WARNING]
+> ### Automated script
 > **It is strongly preferable to run each step individually (see below)**. Each step produces intermediate outputs worth inspecting before proceeding. Mistakes caught early save significant API costs.
 >
 > After setting up your documents, you can run everything at once using this convenience script:
