@@ -1,11 +1,44 @@
+# Unique name for your dataset — used to name all output folders and files
 dataset_name: "my_dataset"
-documents_dir: "path/to/your/data"
+
+# Path to the folder that CONTAINS your dataset folder (i.e. the parent of my_dataset/)
+documents_dir: "."
+
+# LLM provider settings
 llm_provider:
+  # Any litellm-compatible model string, e.g.:
+  #   "openai/gpt-5-nano"
+  #   "fireworks_ai/kimi-k2p5"
+  #   "anthropic/claude-3-5-haiku-20241022"
   lm_model_name: "openai/gpt-5-nano"
-persona: "A college student eager to build foundational coding and data science skills by learning computer science concepts, mastering Python programming, and learning Data Science principles."
-debug: false
-combination_iteration_nb: 15
-filtered_summaries_nb: 100 # How many "sections" you want your queries to be generated from. Each section is a combination of 4-5 pages.
-sampling_multi_doc_ratio: 0.95
+
+  # Optional: use a different model specifically for query generation and judging
+  # Defaults to lm_model_name if not set
+  # query_generation_model_name: "openai/gpt-5-nano"
+  # judge_model_name: "openai/gpt-5-nano"
+
+  # Extra parameters forwarded to the LLM (provider-specific, all optional)
+  lm_extra_kwargs:
+    temperature: 0.7
+    top_p: 0.8
+
+# Describe the target user who will search this document corpus.
+# The more specific, the better the generated queries.
+persona: "A student looking for information about physics."
+
+# Language of the generated queries ("english", "french", "spanish", etc.)
 language: "english"
-query_avg_nb: 1
+
+# Target number of summaries to keep after filtering.
+# A good starting point: 5–10× the number of PDFs.
+filtered_summaries_nb: 50
+
+# Number of multi-document summary combination iterations.
+# Higher = more cross-document queries. Good default: 10–20.
+combination_iteration_nb: 15
+
+# Fraction of summaries that span multiple documents (0.0–1.0).
+sampling_multi_doc_ratio: 0.5
+
+# Print verbose LLM outputs during generation
+debug: false
