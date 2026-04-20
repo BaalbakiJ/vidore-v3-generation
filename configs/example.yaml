@@ -2,10 +2,6 @@ dataset_name: "my_dataset"
 documents_dir: "path/to/your/data"
 llm_provider:
   lm_model_name: "openai/gpt-5-nano"
-  lm_extra_kwargs:
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
 persona: "A college student eager to build foundational coding and data science skills by learning computer science concepts, mastering Python programming, and learning Data Science principles."
 debug: false
 combination_iteration_nb: 15
