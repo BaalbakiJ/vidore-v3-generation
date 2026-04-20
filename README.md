@@ -5,6 +5,7 @@ Generate synthetic queries from a PDF document corpus for evaluating image retri
 ## Install
 
 ```bash
+uv venv --python 3.10
 uv sync
 ```
 
@@ -18,8 +19,9 @@ cp .env.dist .env
 
 The full pipeline takes a folder of PDFs and produces a `final_queries.json` file ready for use. It runs in 4 steps:
 
-```
-PDFs → extract text → generate summaries → generate queries → postprocess queries
+```mermaid
+graph LR
+    A[/PDFs/] --> B[extract text] --> C[generate summaries] --> D[generate queries] --> E[postprocess queries] --> F[\final_queries.json\]
 ```
 
 ### Step 1 — Set up your data folder
@@ -43,7 +45,7 @@ Create a YAML file (e.g. `configs/my_dataset.yaml`). Here is a minimal working e
 dataset_name: "my_dataset"
 
 # Path to the folder that CONTAINS your dataset folder (i.e. the parent of my_dataset/)
-documents_dir: "path/to/parent"
+documents_dir: "."
 
 # LLM provider settings
 llm_provider:
@@ -87,12 +89,23 @@ debug: false
 
 All available config fields with their defaults are documented in `configs/example.yaml`.
 
+### Automated script
+
+> [!WARNING]
+> It is strongly preferable to run each step individually (see below). Each step produces intermediate outputs worth inspecting before proceeding. Mistakes caught early save significant API costs.
+
+After setting up your documents, you can run everything at once using this convenience script:
+
+```bash
+bash vidore-generation.sh my_dataset
+```
+
 ### Step 3 — Extract text from PDFs
 
 Warning : If you have big documents, it can take a while.
 
 ```bash
-vidore-generation extract-text-from-pdfs path/to/my_dataset/pdfs
+vidore-generation extract-text-from-pdfs my_dataset/pdfs
 ```
 
 This creates `my_dataset/markdowns/` with one `.md` file per PDF.
@@ -102,7 +115,7 @@ Note that markdown extraction uses fireworks by default and kimi-k2.5. If you wa
 Optionally verify the extraction succeeded (page counts match):
 
 ```bash
-vidore-generation check-extractions path/to/my_dataset
+vidore-generation check-extractions my_dataset
 ```
 
 ### Step 4 — Generate summaries
@@ -128,7 +141,7 @@ Output folders created under `my_dataset/`:
 
 ```bash
 vidore-generation generate-queries-vidore-juicer \
-  path/to/my_dataset/filtered_summaries/filtered_summaries.json \
+  my_dataset/filtered_summaries/filtered_summaries.json \
   configs/my_dataset.yaml
 ```
 
@@ -140,11 +153,7 @@ This generates queries from each filtered summary, judges their quality, and wri
 vidore-generation postprocess-queries --config configs/my_dataset.yaml
 ```
 
-Filters and rephrases the queries, then writes the final output to:
-
-```
-my_dataset/queries/final_my_dataset_queries.json
-```
+Filters and rephrases the queries, then writes the final output to `my_dataset/queries/final_my_dataset_queries.json`.
 
 Each entry in the file looks like:
 
