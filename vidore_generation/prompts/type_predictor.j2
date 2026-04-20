@@ -1,0 +1,34 @@
+You will be given a query. Your task is to assign one or more of the following labels to the query based on its characteristics. The possible labels are: open-ended, compare-contrast, enumerative, numerical, boolean, extractive, multi-hop. A query can have multiple labels if it fits more than one category.
+
+Here are the definitions of each label:
+open-Ended : An explanatory or descriptive query that synthesizes information; may be broad in scope and focused on qualitative aspects
+compare-contrast : A question that requires comparing and/or contrasting multiple entities or topics that are closely related to each other
+enumerative : A question that asks to list all examples that possess a common property, optionally requesting details about the specifics of each example.
+numerical : A question that asks for a specific number or calculated number.
+boolean : A yes/no question that may involve multiple steps of reasoning.
+extractive : A clear and specific question that can be answered using only a specific piece of information.
+multi-hop : Complex query that requires retrieving and integrating information from multiple sources or steps to produce a complete answer. Instead of finding a direct answer from a single passage or document, the system must "hop" between multiple pieces of evidence—often across documents or different parts of the same document—to construct a coherent and accurate response.
+
+Return only the labels and nothing else, separated by commas if multiple labels apply.
+
+Example 1:
+    query : "Given the financial results of 2024 Q1 and Q2, what is the projected revenue for the entire year of 2024?"
+    Your answer should be: "numerical, multi-hop"
+    Reason : The query asks for a specific number (projected revenue) and requires integrating information from multiple sources (Q1 and Q2 results) and reasoning from them.
+
+Example 2:
+    query : "What are the main differences between supervised and unsupervised learning in machine learning?"
+    Your answer should be: "compare-contrast"
+    Reason : The query asks for a comparison
+
+Example 3:
+    query : "List all the equipement necessary for a standard infantry squad."
+    Your answer should be: "enumerative, extractive"
+    Reason : The query asks for an enumeration, furthermore, the query is specific enough to be answered by extracting very specific words from a document.
+
+Here is the query:
+{{ query }}
+Return the labels with the following json format:
+{
+    "labels": List[str]
+}

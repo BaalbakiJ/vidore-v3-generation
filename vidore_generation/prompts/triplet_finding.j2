@@ -1,0 +1,39 @@
+Here is a list of summaries from different sections of different documents:
+
+{% for document_description in document_descriptions %}
+Document Description {{ loop.index0 }}: {{ document_description }}
+
+{% for summary in summaries[loop.index0] %}
+Summary {{ loop.index0 }}: {{ summary }}
+{% endfor %}
+{% endfor %}
+Write down 5 pairs of summaries that have related information. Follow the expected json format.
+{
+    "combinations": [
+        {
+            "summary_1_document_id": 0,
+            "summary_1_id": 0,
+            "summary_1": "Write down original summary with summary_1_id from summary_1_document_id here",
+            "summary_2_document_id": 0,
+            "summary_2_id": 0,
+            "summary_2": "Write down original summary with summary_2_id from summary_2_document_id here",
+            "summary_3_document_id": 0,
+            "summary_3_id": 0,
+            "summary_3": "Write down original summary with summary_3_id from summary_3_document_id here",
+            "combined_summary": "Write down detailed combined summary here"
+        },
+        ...
+        {
+            "summary_1_document_id": ...,
+            "summary_1_id": ...,
+            "summary_1": "...",
+            "summary_2_document_id": ...,
+            "summary_2_id": ...,
+            "summary_2": "...",
+            "summary_3_document_id": ...,
+            "summary_3_id": ...,
+            "summary_3": "...",
+            "combined_summary": "..."
+        }
+    ]
+}

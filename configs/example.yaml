@@ -1,0 +1,15 @@
+dataset_name: "my_dataset"
+documents_dir: "path/to/your/data"
+llm_provider:
+  lm_model_name: "openai/gpt-5-nano"
+  lm_extra_kwargs:
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+persona: "A college student eager to build foundational coding and data science skills by learning computer science concepts, mastering Python programming, and learning Data Science principles."
+debug: false
+combination_iteration_nb: 15
+filtered_summaries_nb: 100 # How many "sections" you want your queries to be generated from. Each section is a combination of 4-5 pages.
+sampling_multi_doc_ratio: 0.95
+language: "english"
+query_avg_nb: 1

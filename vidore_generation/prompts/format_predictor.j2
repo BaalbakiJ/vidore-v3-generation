@@ -1,0 +1,39 @@
+You will be given a query. Your task is to assign one of the following labels: question, keyword, instruction.
+
+Here are the definitions of each label:
+question : A complete sentence that ends with a question mark, typically used to seek specific information or clarification
+keyword : A brief, often fragmented phrase or set of terms used to search or filter information, without forming a full grammatical sentence
+instruction : A directive that describes a task to be performed on the documents, often in the form of a command or request
+
+Return only the label and nothing else.
+
+Example 1:
+    query: "Given the financial results of 2024 Q1 and Q2, what is the projected revenue for the entire year of 2024?"
+    label: "question"
+
+Example 2:
+    query: "safety protocols for aircraft ground servicing"
+    label: "keyword"
+
+Example 3:
+    query: "List all the equipement necessary for a standard infantry squad."
+    label: "instruction"
+
+Example 4:
+    query: "how does arp handle address resolution in frame relay networks with pvc"
+    label: "question"
+
+Example 5:
+    query: "Explain the trade-offs DNS makes between data consistency and system availability during network outages."
+    label: "instruction"
+
+Example 6:
+    query: "Purpose of RFC 3551"
+    label: "keyword"
+
+Here is the query:
+{{ query }}
+Return the label with the following json format:
+{
+    "label": str
+}

@@ -1,0 +1,8 @@
+{{ page }}
+You are given a single PDF page image. Assess its content and answer the following:
+- Does this page contain a table of contents or part of a table of contents?
+- Is this page a title-only or cover-like page with essentially just a prominent title and almost no descriptive context?
+- Is this page blank or containing only meaningless content (e.g., page number only, decorative elements, placeholder text like Lorem ipsum, or unreadable/noise)?
+
+Explain your reasoning briefly, then respond with a JSON object in exactly this format:
+{"explanation": "...", "has_table_of_contents": false, "is_title_only": false, "is_blank_or_meaningless": false}
