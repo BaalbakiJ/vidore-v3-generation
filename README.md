@@ -21,7 +21,9 @@ The full pipeline takes a folder of PDFs and produces a `final_queries.json` fil
 
 ```mermaid
 graph LR
-    A[/PDFs/] --> B[extract text] --> C[generate summaries] --> D[generate queries] --> E[postprocess queries] --> F[\final_queries.json\]
+    A[/PDFs/] --> B[extract text]
+    B --> C[generate summaries] --> D[generate queries] --> E[postprocess queries]
+    E --> F[\final_queries.json\]
 ```
 
 ### Step 1 — Set up your data folder
