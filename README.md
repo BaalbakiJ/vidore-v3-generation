@@ -2,10 +2,9 @@
 
 Generate synthetic queries from a PDF document corpus for evaluating image retrieval models.
 
-> [!IMPORTANT]
-> 📑 [ViDoRe V2](https://arxiv.org/abs/2505.17166)
-> 
-> 📑 [ViDoRe V3](https://arxiv.org/abs/2601.08620)
+- 📑  [ColPali (ViDoRe V1)](https://arxiv.org/abs/2407.01449)
+- 📑 [ViDoRe V2](https://arxiv.org/abs/2505.17166)
+- 📑 [ViDoRe V3](https://arxiv.org/abs/2601.08620)
 
 ## Install
 
