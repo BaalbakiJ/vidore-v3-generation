@@ -200,3 +200,8 @@ Any model supported by [litellm](https://docs.litellm.ai/docs/providers) works. 
 Provider-specific parameters (e.g. `top_k` for Fireworks) can be set in `lm_extra_kwargs` — unsupported parameters are automatically dropped for providers that don't support them.
 
 Set the corresponding API key in your `.env` file (see `.env.dist` for the full list).
+
+---
+
+## Acknowledgement
+The core code for this repo was contributed by [António Loison](https://github.com/antonioloison) during his work at Illuin Technology. We thank him for his contributions and helping shape the ViDoRe v3 benchmark.
