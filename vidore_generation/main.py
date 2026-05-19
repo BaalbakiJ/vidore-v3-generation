@@ -15,8 +15,8 @@ from tqdm import tqdm
 from vidore_generation.dtos import Failed, LLMProviderConfig, Prompt
 from vidore_generation.generation_handlers.factory import make_generation_handler
 from vidore_generation.generation_schemas import Summary
-from vidore_generation.pdf_parsing.extract_text_from_pdfs import parse_pdfs
 from vidore_generation.pipelines.llm_pipeline import LLMPipeline
+from vidore_generation.pipelines.visual_summary_pipeline import VisualSummaryPipeline
 from vidore_generation.pipelines.vlm_pipeline import VLMPipeline
 
 logging.getLogger("pydantic_core").setLevel(logging.ERROR)
@@ -43,28 +43,37 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("documents_dir", type=click.Path(exists=True, path_type=Path))
-def create_images(documents_dir):
-    assert "/pdfs" in str(documents_dir)
-    imgs_path = str(documents_dir).replace("/pdfs", "/imgs")
-    os.makedirs(imgs_path, exist_ok=True)
-    for filename in tqdm(os.listdir(documents_dir)):
-        file_stem = filename.split(".")[0]
-        doc_folder_path = os.path.join(imgs_path, file_stem)
-        if filename.endswith(".pdf") and not os.path.exists(doc_folder_path):
-            os.makedirs(doc_folder_path, exist_ok=True)
-            doc = pdfium.PdfDocument(os.path.join(documents_dir, filename))
-            number_of_pages = len(doc)
-            for page_number in range(number_of_pages):
-                page = doc[page_number]
-                img_path = os.path.join(
-                    imgs_path, file_stem, f"{file_stem}_{page_number}.png"
-                )
-                page.render(scale=200 / 72).to_pil().save(img_path)
+def create_images(documents_dir: Path):
+    if documents_dir.name != "pdfs":
+        raise click.ClickException(
+            "create-images expects a path to a directory named 'pdfs'"
+        )
+
+    imgs_path = documents_dir.parent / "imgs"
+    imgs_path.mkdir(exist_ok=True)
+    for pdf_path in tqdm(sorted(documents_dir.iterdir())):
+        if pdf_path.suffix != ".pdf":
+            continue
+
+        file_stem = pdf_path.stem
+        doc_folder_path = imgs_path / file_stem
+        if doc_folder_path.exists():
+            continue
+
+        doc_folder_path.mkdir(exist_ok=True)
+        doc = pdfium.PdfDocument(pdf_path)
+        number_of_pages = len(doc)
+        for page_number in range(number_of_pages):
+            page = doc[page_number]
+            img_path = doc_folder_path / f"{file_stem}_{page_number}.png"
+            page.render(scale=200 / 72).to_pil().save(img_path)
 
 
 @cli.command()
 @click.argument("dataset_path", type=click.Path(exists=True, path_type=Path))
 def extract_text_from_pdfs(dataset_path):
+    from vidore_generation.pdf_parsing.extract_text_from_pdfs import parse_pdfs
+
     parse_pdfs(dataset_path)
 
 
@@ -150,6 +159,55 @@ def vlm(config):
         llm_provider=llm_provider,
     )
     vlm_pipeline.run()
+
+
+@cli.command()
+@click.option(
+    "--config",
+    type=click.Path(),
+    callback=load_config,
+    is_eager=True,
+    expose_value=False,
+    help="Path to config file.",
+)
+def visual_summaries(config):
+    llm_provider = _parse_llm_provider(config)
+    dataset_name = config["dataset_name"]
+    dataset_dir = Path(os.path.join(config["documents_dir"], dataset_name))
+    visual_summary_config = config.get("visual_summary") or {}
+    default_document_description = (
+        "Internal technical, validation, regulatory, product, and RAQA documents."
+    )
+
+    pipeline = VisualSummaryPipeline(
+        dataset_dir=dataset_dir,
+        llm_provider=llm_provider,
+        language=config.get("language", "english"),
+        debug=config.get("debug", False),
+        section_size=visual_summary_config.get("section_size", 1),
+        stride=visual_summary_config.get("stride", 1),
+        max_windows=visual_summary_config.get("max_windows"),
+        max_windows_per_document=visual_summary_config.get(
+            "max_windows_per_document"
+        ),
+        max_documents=visual_summary_config.get("max_documents"),
+        max_summary_words=visual_summary_config.get("max_summary_words", 250),
+        filtered_summaries_nb=visual_summary_config.get(
+            "filtered_summaries_nb",
+            config.get("filtered_summaries_nb", 50),
+        ),
+        overwrite_existing=visual_summary_config.get("overwrite_existing", False),
+        document_description=visual_summary_config.get(
+            "document_description",
+            default_document_description,
+        ),
+    )
+    filtered_summaries = pipeline.run()
+    click.echo(
+        "Visual summaries written to "
+        f"{dataset_dir / 'filtered_summaries' / 'filtered_summaries.json'} "
+        f"({len(filtered_summaries)} filtered summaries)."
+    )
 
 
 @cli.command()
