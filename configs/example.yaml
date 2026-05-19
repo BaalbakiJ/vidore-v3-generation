@@ -54,4 +54,9 @@ visual_summary:
   overwrite_existing: false
   # If true, visual summaries skip pages excluded in page_manifest.jsonl.
   respect_page_manifest: false
+  # If true, generate one VLM-based description per document from page images.
+  use_visual_document_descriptions: false
+  max_description_pages: 3
+  max_description_words: 150
+  overwrite_descriptions: false
   document_description: "Internal technical, business, product, and reference documents."

@@ -264,6 +264,22 @@ def visual_summaries(config):
             "respect_page_manifest",
             False,
         ),
+        use_visual_document_descriptions=visual_summary_config.get(
+            "use_visual_document_descriptions",
+            False,
+        ),
+        max_description_pages=visual_summary_config.get(
+            "max_description_pages",
+            3,
+        ),
+        max_description_words=visual_summary_config.get(
+            "max_description_words",
+            150,
+        ),
+        overwrite_descriptions=visual_summary_config.get(
+            "overwrite_descriptions",
+            False,
+        ),
     )
     filtered_summaries = pipeline.run()
     click.echo(

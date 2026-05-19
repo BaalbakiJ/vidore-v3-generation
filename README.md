@@ -166,6 +166,8 @@ vidore-generation create-images my_dataset/pdfs --respect-page-manifest
 
 Set `visual_summary.respect_page_manifest: true` to make `visual-summaries` skip already-rendered images excluded by `page_manifest.jsonl`.
 
+Set `visual_summary.use_visual_document_descriptions: true` to generate one VLM-based description per document from page images. These are written to `descriptions/<filename>.json` and used as context for visual summaries; `visual_summary.document_description` remains the fallback context.
+
 ### Step 5 — Generate queries
 
 ```bash

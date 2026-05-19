@@ -5,19 +5,31 @@ from uuid import UUID
 
 from pytest import MonkeyPatch
 
-from vidore_generation.dtos import ImageSection, LLMProviderConfig, Prompt
+from vidore_generation.dtos import (
+    DocumentDescription,
+    ImageSection,
+    LLMProviderConfig,
+    Prompt,
+)
 from vidore_generation.generation_handlers.generation_handler import GenerationHandler
-from vidore_generation.generation_schemas import Summary
+from vidore_generation.generation_schemas import Description, Summary
 from vidore_generation.pipelines import visual_summary_pipeline
-from vidore_generation.pipelines.visual_summary_pipeline import VisualSummaryPipeline
+from vidore_generation.pipelines.visual_summary_pipeline import (
+    VisualSummaryPipeline,
+    get_document_id,
+)
 
 
 class FakeGenerationHandler(GenerationHandler):
-    def __init__(self) -> None:
+    def __init__(self, results: List[Any] | None = None) -> None:
         self.prompts: List[Prompt] = []
+        self.results = results
+        self.call_count = 0
 
-    def generate_single_sample(self, prompt: Prompt) -> Summary:
+    def generate_single_sample(self, prompt: Prompt) -> Any:
         self.prompts.append(prompt)
+        if self.results is not None:
+            return self.results[0]
         return Summary(summary="visual summary")
 
     def generate_multiple_samples(
@@ -25,8 +37,11 @@ class FakeGenerationHandler(GenerationHandler):
         prompts: List[Prompt],
         semaphore_size: int = 20,
         desc: str = "Generating samples",
-    ) -> List[Summary]:
+    ) -> List[Any]:
         self.prompts = prompts
+        self.call_count += 1
+        if self.results is not None:
+            return self.results[: len(prompts)]
         return [
             Summary(summary=f"visual summary {index}")
             for index, _prompt in enumerate(prompts)
@@ -74,6 +89,30 @@ def make_pipeline(
         llm_provider=llm_provider,
         **kwargs,
     )
+
+
+def test_image_sections_use_fallback_document_description_by_default(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    fake_handler = FakeGenerationHandler()
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        document_description="Fallback document context.",
+    )
+
+    sections = create_sections(pipeline)
+
+    assert [section.document_description for section in sections] == [
+        "Fallback document context."
+    ]
+    assert fake_handler.call_count == 0
 
 
 def test_max_windows_per_document_creates_one_window_per_document(
@@ -196,6 +235,125 @@ def test_respect_page_manifest_excludes_visual_summary_images(
     sections = create_sections(pipeline)
 
     assert [section.page_numbers for section in sections] == [[0], [2]]
+
+
+def test_generated_visual_document_descriptions_are_used_when_enabled(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_1.png")
+    fake_handler = FakeGenerationHandler(
+        results=[Description(description="Generated doc context")]
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        use_visual_document_descriptions=True,
+        document_description="Fallback document context.",
+    )
+
+    sections = create_sections(pipeline)
+
+    assert [section.document_description for section in sections] == [
+        "Generated doc context",
+        "Generated doc context",
+    ]
+    description_path = dataset_dir / "descriptions" / "manual.json"
+    exported_description = json.loads(description_path.read_text(encoding="utf-8"))
+    assert exported_description == {
+        "document_id": str(get_document_id("manual")),
+        "description": "Generated doc context",
+    }
+
+
+def test_existing_visual_document_descriptions_are_loaded_when_present(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    description_path = dataset_dir / "descriptions" / "manual.json"
+    description_path.parent.mkdir(parents=True, exist_ok=True)
+    description_path.write_text(
+        DocumentDescription(
+            document_id=get_document_id("manual"),
+            description="Existing doc context",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    fake_handler = FakeGenerationHandler(
+        results=[Description(description="Generated doc context")]
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        use_visual_document_descriptions=True,
+        overwrite_descriptions=False,
+        document_description="Fallback document context.",
+    )
+
+    sections = create_sections(pipeline)
+
+    assert [section.document_description for section in sections] == [
+        "Existing doc context"
+    ]
+    assert fake_handler.call_count == 0
+
+
+def test_visual_document_description_samples_respect_page_manifest(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_1.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_2.png")
+    manifest_rows = [
+        {
+            "filename": "manual",
+            "page_number": 2,
+            "image_page_number": 1,
+            "exclude_from_visual_summaries": True,
+        }
+    ]
+    (dataset_dir / "page_manifest.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in manifest_rows) + "\n",
+        encoding="utf-8",
+    )
+    fake_handler = FakeGenerationHandler()
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        respect_page_manifest=True,
+        max_description_pages=3,
+    )
+
+    try:
+        samples = pipeline.create_visual_document_samples(
+            [dataset_dir / "imgs" / "manual"]
+        )
+    finally:
+        pipeline.close_logger()
+
+    assert len(samples) == 1
+    assert samples[0].page_numbers == [0, 2]
+    assert [
+        Path(image_path).name for image_path in samples[0].image_paths
+    ] == [
+        "manual_0.png",
+        "manual_2.png",
+    ]
 
 
 def test_run_exports_vidore_compatible_visual_summaries_without_markdowns(

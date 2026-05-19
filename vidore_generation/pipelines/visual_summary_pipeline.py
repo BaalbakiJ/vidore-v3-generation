@@ -6,9 +6,19 @@ from pathlib import Path
 from typing import Dict, List
 from uuid import UUID, uuid5
 
-from vidore_generation.dtos import Failed, FinalSummary, ImageSection, LLMProviderConfig
+from vidore_generation.dtos import (
+    DocumentDescription,
+    Failed,
+    FinalSummary,
+    ImageSection,
+    LLMProviderConfig,
+)
 from vidore_generation.generation_handlers.generation_handler import GenerationHandler
 from vidore_generation.generation_schemas import Summary
+from vidore_generation.generators.visual_document_descriptor import (
+    VisualDocumentDescriptor,
+    VisualDocumentSample,
+)
 from vidore_generation.generators.visual_summarizer import VisualSummarizer
 from vidore_generation.page_filtering.page_manifest import (
     get_excluded_image_page_numbers_by_filename,
@@ -77,6 +87,10 @@ class VisualSummaryPipeline:
         overwrite_existing: bool = False,
         document_description: str | None = None,
         respect_page_manifest: bool = False,
+        use_visual_document_descriptions: bool = False,
+        max_description_pages: int = 3,
+        max_description_words: int = 150,
+        overwrite_descriptions: bool = False,
     ):
         if section_size < 1:
             raise ValueError(f"section_size must be at least 1, got {section_size}")
@@ -99,6 +113,14 @@ class VisualSummaryPipeline:
             raise ValueError(
                 f"filtered_summaries_nb must be at least 1, got {filtered_summaries_nb}"
             )
+        if max_description_pages < 1:
+            raise ValueError(
+                f"max_description_pages must be at least 1, got {max_description_pages}"
+            )
+        if max_description_words < 1:
+            raise ValueError(
+                f"max_description_words must be at least 1, got {max_description_words}"
+            )
 
         self.dataset_dir = dataset_dir
         self.imgs_dir = dataset_dir / "imgs"
@@ -115,6 +137,10 @@ class VisualSummaryPipeline:
         self.overwrite_existing = overwrite_existing
         self.document_description = document_description or ""
         self.respect_page_manifest = respect_page_manifest
+        self.use_visual_document_descriptions = use_visual_document_descriptions
+        self.max_description_pages = max_description_pages
+        self.max_description_words = max_description_words
+        self.overwrite_descriptions = overwrite_descriptions
         self.excluded_visual_summary_page_numbers: dict[str, set[int]] | None = None
         self.visual_summaries_path = (
             self.dataset_dir / "visual_summaries" / "visual_summaries.json"
@@ -127,25 +153,48 @@ class VisualSummaryPipeline:
         self.init_logger()
         self.vl_generation_handler: GenerationHandler | None = None
         self.visual_summarizer: VisualSummarizer | None = None
+        self.visual_document_descriptor: VisualDocumentDescriptor | None = None
+
+    @property
+    def descriptions_dir(self) -> Path:
+        return self.dataset_dir / "descriptions"
+
+    def get_vl_generation_handler(self) -> GenerationHandler:
+        if self.vl_generation_handler is None:
+            self.vl_generation_handler = make_generation_handler(
+                self.llm_provider,
+                "vl",
+                logger=self.logger,
+            )
+        return self.vl_generation_handler
 
     def get_visual_summarizer(self) -> VisualSummarizer:
         if self.visual_summarizer is not None:
             return self.visual_summarizer
 
-        self.vl_generation_handler = make_generation_handler(
-            self.llm_provider,
-            "vl",
-            logger=self.logger,
-        )
         self.visual_summarizer = VisualSummarizer(
             model_name=self.llm_provider.vl_model_name
             or self.llm_provider.lm_model_name,
             logger=self.logger,
-            generation_handler=self.vl_generation_handler,
+            generation_handler=self.get_vl_generation_handler(),
             language=self.language,
             max_summary_words=self.max_summary_words,
         )
         return self.visual_summarizer
+
+    def get_visual_document_descriptor(self) -> VisualDocumentDescriptor:
+        if self.visual_document_descriptor is not None:
+            return self.visual_document_descriptor
+
+        self.visual_document_descriptor = VisualDocumentDescriptor(
+            model_name=self.llm_provider.vl_model_name
+            or self.llm_provider.lm_model_name,
+            logger=self.logger,
+            generation_handler=self.get_vl_generation_handler(),
+            language=self.language,
+            max_description_words=self.max_description_words,
+        )
+        return self.visual_document_descriptor
 
     def init_logger(self) -> None:
         logs_dir = self.dataset_dir / "logs"
@@ -231,13 +280,158 @@ class VisualSummaryPipeline:
         ]
         return sorted(image_paths, key=extract_page_number)
 
+    def get_description_path(self, filename: str) -> Path:
+        return self.descriptions_dir / f"{filename}.json"
+
+    def load_document_description(self, filename: str) -> DocumentDescription | None:
+        description_path = self.get_description_path(filename)
+        if not description_path.exists():
+            return None
+
+        with open(description_path, "r", encoding="utf-8") as file:
+            return DocumentDescription(**json.load(file))
+
+    def export_document_description(
+        self,
+        filename: str,
+        description: DocumentDescription,
+    ) -> None:
+        self.descriptions_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.get_description_path(filename), "w", encoding="utf-8") as file:
+            json.dump(json.loads(description.model_dump_json()), file, indent=4)
+
+    def create_visual_document_samples(
+        self,
+        document_dirs: List[Path],
+    ) -> List[VisualDocumentSample]:
+        samples: List[VisualDocumentSample] = []
+        for document_dir in document_dirs:
+            image_paths = self.get_document_image_paths(document_dir)[
+                : self.max_description_pages
+            ]
+            if not image_paths:
+                continue
+            samples.append(
+                VisualDocumentSample(
+                    filename=document_dir.name,
+                    image_paths=[str(path) for path in image_paths],
+                    page_numbers=[extract_page_number(path) for path in image_paths],
+                )
+            )
+        return samples
+
+    def get_document_description_for_filename(
+        self,
+        filename: str,
+        descriptions_by_filename: dict[str, str],
+    ) -> str:
+        description = descriptions_by_filename.get(filename)
+        if description:
+            return description
+        if self.document_description:
+            return self.document_description
+        return "Document from the visual summary dataset."
+
+    def describe_documents(self, document_dirs: List[Path]) -> dict[str, str]:
+        descriptions_by_filename: dict[str, str] = {}
+        document_dirs_to_generate: List[Path] = []
+        loaded_count = 0
+
+        for document_dir in document_dirs:
+            if not self.overwrite_descriptions:
+                existing_description = self.load_document_description(
+                    document_dir.name
+                )
+                if existing_description is not None:
+                    descriptions_by_filename[document_dir.name] = (
+                        existing_description.description
+                    )
+                    loaded_count += 1
+                    continue
+            document_dirs_to_generate.append(document_dir)
+
+        self.logger.info("Document descriptions loaded: %d", loaded_count)
+
+        samples = self.create_visual_document_samples(document_dirs_to_generate)
+        sampled_filenames = {sample.filename for sample in samples}
+        generated_count = 0
+        written_count = 0
+
+        for document_dir in document_dirs_to_generate:
+            if document_dir.name in sampled_filenames:
+                continue
+            description_text = self.get_document_description_for_filename(
+                document_dir.name,
+                {},
+            )
+            descriptions_by_filename[document_dir.name] = description_text
+            self.export_document_description(
+                document_dir.name,
+                DocumentDescription(
+                    document_id=get_document_id(document_dir.name),
+                    description=description_text,
+                ),
+            )
+            written_count += 1
+
+        if samples:
+            description_results = (
+                self.get_visual_document_descriptor().describe_documents(samples)
+            )
+            if len(description_results) != len(samples):
+                raise ValueError(
+                    "Visual document description result count does not match "
+                    "document sample count: "
+                    f"{len(description_results)} results for {len(samples)} samples"
+                )
+
+            for sample, description_result in zip(samples, description_results):
+                if isinstance(description_result, Failed):
+                    description_text = self.get_document_description_for_filename(
+                        sample.filename,
+                        {},
+                    )
+                    self.logger.warning(
+                        "Visual document description failed for %s",
+                        sample.filename,
+                    )
+                else:
+                    description_text = description_result.description
+                    generated_count += 1
+
+                descriptions_by_filename[sample.filename] = description_text
+                self.export_document_description(
+                    sample.filename,
+                    DocumentDescription(
+                        document_id=get_document_id(sample.filename),
+                        description=description_text,
+                    ),
+                )
+                written_count += 1
+
+        self.logger.info("Document descriptions generated: %d", generated_count)
+        if written_count:
+            self.logger.info("Document descriptions written: %s", self.descriptions_dir)
+
+        return descriptions_by_filename
+
     def create_image_sections(self) -> List[ImageSection]:
         document_dirs = self.discover_document_dirs()
+        descriptions_by_filename: dict[str, str] = {}
+        if self.use_visual_document_descriptions:
+            descriptions_by_filename = self.describe_documents(document_dirs)
+
         image_sections: List[ImageSection] = []
 
         self.logger.info("Documents found: %d", len(document_dirs))
         for document_dir in document_dirs:
             image_paths = self.get_document_image_paths(document_dir)
+            document_description = self.document_description
+            if self.use_visual_document_descriptions:
+                document_description = self.get_document_description_for_filename(
+                    document_dir.name,
+                    descriptions_by_filename,
+                )
             document_window_count = 0
             for start_index in range(0, len(image_paths), self.stride):
                 end_index = start_index + self.section_size
@@ -247,7 +441,7 @@ class VisualSummaryPipeline:
                 image_sections.append(
                     ImageSection(
                         filename=document_dir.name,
-                        document_description=self.document_description,
+                        document_description=document_description,
                         images=[],
                         image_paths=[str(path) for path in window_paths],
                         page_numbers=[
