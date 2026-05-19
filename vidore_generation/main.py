@@ -12,7 +12,9 @@ import pypdfium2 as pdfium
 import yaml
 from tqdm import tqdm
 
-from vidore_generation.dtos import LLMProviderConfig
+from vidore_generation.dtos import Failed, LLMProviderConfig, Prompt
+from vidore_generation.generation_handlers.factory import make_generation_handler
+from vidore_generation.generation_schemas import Summary
 from vidore_generation.pdf_parsing.extract_text_from_pdfs import parse_pdfs
 from vidore_generation.pipelines.llm_pipeline import LLMPipeline
 from vidore_generation.pipelines.vlm_pipeline import VLMPipeline
@@ -102,6 +104,7 @@ def llm(config):
         language=language,
         filtered_summaries_nb=filtered_summaries_nb,
         extra_kwargs=llm_provider.lm_extra_kwargs,
+        llm_provider=llm_provider,
     )
     llm_pipeline.run()
 
@@ -144,8 +147,54 @@ def vlm(config):
         language=language,
         lm_extra_kwargs=llm_provider.lm_extra_kwargs,
         vl_extra_kwargs=llm_provider.vl_extra_kwargs,
+        llm_provider=llm_provider,
     )
     vlm_pipeline.run()
+
+
+@cli.command()
+@click.option(
+    "--config",
+    type=click.Path(),
+    callback=load_config,
+    is_eager=True,
+    expose_value=False,
+    help="Path to config file.",
+)
+def test_bedrock(config):
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    llm_provider = _parse_llm_provider(config)
+    if llm_provider.provider != "bedrock":
+        raise click.ClickException(
+            "test-bedrock requires llm_provider.provider=bedrock"
+        )
+
+    try:
+        handler = make_generation_handler(llm_provider, "lm")
+        result = handler.generate_single_sample(
+            Prompt(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": 'Return JSON: {"summary": "Bedrock works"}',
+                    }
+                ],
+                arguments={"pydantic_schema": Summary},
+            )
+        )
+    except (BotoCoreError, ClientError) as error:
+        raise click.ClickException(
+            "Bedrock smoke test failed "
+            f"for model={llm_provider.lm_model_name}, "
+            f"region={llm_provider.aws_region}, "
+            f"profile={llm_provider.aws_profile}: {error}"
+        ) from error
+    if isinstance(result, Failed):
+        raise click.ClickException(result.error or "Bedrock smoke test failed")
+    if not isinstance(result, Summary):
+        raise click.ClickException(f"Unexpected Bedrock smoke test result: {result}")
+    click.echo(result.model_dump_json())
 
 
 @cli.command()
@@ -290,6 +339,7 @@ def postprocess_queries(config):
             ),
             debug=debug,
             extra_kwargs=llm_provider.lm_extra_kwargs,
+            llm_provider=llm_provider,
         )
 
     vidore_juicer_rephrased_queries = rephrase_queries(
@@ -300,6 +350,7 @@ def postprocess_queries(config):
         ),
         language=language,
         extra_kwargs=llm_provider.lm_extra_kwargs,
+        llm_provider=llm_provider,
     )
 
     final_queries = []

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from tqdm import tqdm
 
-from vidore_generation.dtos import Document, Failed, FinalSummary
+from vidore_generation.dtos import Document, Failed, FinalSummary, LLMProviderConfig
 from vidore_generation.generators.corpus_describer import CorpusDescriber
 from vidore_generation.generators.document_descriptor import DocumentDescriptor
 from vidore_generation.generators.section_extractor import SectionExtractor
@@ -26,6 +26,7 @@ class LLMPipeline(SummaryPipeline):
         language: str = "english",
         filtered_summaries_nb: int = 400,
         extra_kwargs: Optional[Dict[str, Any]] = None,
+        llm_provider: Optional[LLMProviderConfig] = None,
     ):
         super().__init__(
             documents_dir=documents_dir,
@@ -37,6 +38,7 @@ class LLMPipeline(SummaryPipeline):
             language=language,
             filtered_summaries_nb=filtered_summaries_nb,
             extra_kwargs=extra_kwargs,
+            llm_provider=llm_provider,
         )
 
         self.document_descriptor = DocumentDescriptor(

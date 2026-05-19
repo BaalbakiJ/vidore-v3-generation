@@ -1,10 +1,11 @@
 import json
 from typing import Optional
 
+from vidore_generation.dtos import LLMProviderConfig, Prompt
 from vidore_generation.generation_handlers.api_generation_handler import (
     APIGenerationHandler,
-    Prompt,
 )
+from vidore_generation.generation_handlers.factory import make_generation_handler
 from vidore_generation.generation_schemas import QueryRephrase
 
 
@@ -14,12 +15,17 @@ def rephrase_queries(
     queries_path,
     language,
     extra_kwargs: Optional[dict] = None,
+    llm_provider: Optional[LLMProviderConfig] = None,
 ):
     with open(queries_path, "r") as f:
         queries = json.load(f)
-    api_generation_handler = APIGenerationHandler(
-        model_name=model_name,
-        extra_kwargs=extra_kwargs or {},
+    api_generation_handler = (
+        make_generation_handler(llm_provider, "query_generation")
+        if llm_provider is not None
+        else APIGenerationHandler(
+            model_name=model_name,
+            extra_kwargs=extra_kwargs or {},
+        )
     )
     template = environment.get_template("query_rephrase.j2")
     prompts = []
