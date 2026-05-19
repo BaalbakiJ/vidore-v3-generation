@@ -4,10 +4,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from vidore_generation.dtos import Document, FinalSummary
+from vidore_generation.dtos import Document, FinalSummary, LLMProviderConfig
 from vidore_generation.filters.summary_filter import SummaryFilter
-from vidore_generation.generation_handlers.api_generation_handler import (
-    APIGenerationHandler,
+from vidore_generation.generation_handlers.factory import (
+    make_generation_handler,
 )
 from vidore_generation.generators.judge import Judge
 from vidore_generation.generators.summary_combinator import SummaryCombinator
@@ -26,6 +26,7 @@ class SummaryPipeline:
         language: str = "english",
         filtered_summaries_nb: int = 400,
         extra_kwargs: Optional[Dict[str, Any]] = None,
+        llm_provider: Optional[LLMProviderConfig] = None,
     ):
         self.documents_dir = documents_dir
         self.markdowns_dir = Path(os.path.join(documents_dir, "markdowns"))
@@ -35,11 +36,22 @@ class SummaryPipeline:
         self.combination_iteration_nb = combination_iteration_nb
         self.language = language
         self.filtered_summaries_nb = filtered_summaries_nb
+        self.llm_provider = llm_provider or LLMProviderConfig(
+            lm_model_name=model_name,
+            lm_extra_kwargs=extra_kwargs or {},
+        )
         self.init_logger()
 
         if inference_method == "api":
-            self.generation_handler = APIGenerationHandler(
-                model_name=model_name, logger=self.logger, extra_kwargs=extra_kwargs or {}
+            self.generation_handler = make_generation_handler(
+                self.llm_provider,
+                "lm",
+                logger=self.logger,
+            )
+            self.judge_generation_handler = make_generation_handler(
+                self.llm_provider,
+                "judge",
+                logger=self.logger,
             )
         # elif inference_method == "vllm":
         #     self.generation_handler = VLLMGenerationHandler(model_name=model_name, logger=self.logger)
@@ -57,9 +69,9 @@ class SummaryPipeline:
             language=language,
         )
         self.judge = Judge(
-            model_name=model_name,
+            model_name=self.llm_provider.judge_model_name or model_name,
             logger=self.logger,
-            generation_handler=self.generation_handler,
+            generation_handler=self.judge_generation_handler,
             language=language,
         )
         self.summary_filter = SummaryFilter()

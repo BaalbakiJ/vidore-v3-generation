@@ -10,6 +10,10 @@ from vidore_generation.generation_schemas import Judgment
 class LLMProviderConfig(BaseModel):
     """Centralised LLM provider settings read from the config file's llm_provider key."""
 
+    provider: Literal["litellm", "bedrock"] = "litellm"
+    aws_region: Optional[str] = None
+    aws_profile: Optional[str] = None
+
     lm_model_name: str
     vl_model_name: Optional[str] = None
     # Fall back to lm_model_name when not set explicitly
@@ -24,6 +28,8 @@ class LLMProviderConfig(BaseModel):
 
     @model_validator(mode="after")
     def _set_defaults(self) -> "LLMProviderConfig":
+        if self.provider == "bedrock" and self.aws_region is None:
+            raise ValueError("aws_region is required when provider is bedrock")
         if self.query_generation_model_name is None:
             self.query_generation_model_name = self.lm_model_name
         if self.judge_model_name is None:

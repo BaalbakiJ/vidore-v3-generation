@@ -13,7 +13,10 @@ from pydantic import BaseModel
 from tqdm.asyncio import tqdm as async_tqdm
 
 from vidore_generation.dtos import LLMProviderConfig
-from vidore_generation.generation_handlers.api_generation_handler import APIGenerationHandler
+from vidore_generation.generation_handlers.api_generation_handler import (
+    APIGenerationHandler,
+)
+from vidore_generation.generation_handlers.factory import make_generation_handler
 from vidore_generation.query_generation.vidore_juicer.generate_queries import (
     Judgment,
     Queries,
@@ -47,20 +50,31 @@ class QueryGenerator:
         language: str = "english",
         query_generation_extra_kwargs: Optional[dict] = None,
         judge_extra_kwargs: Optional[dict] = None,
+        llm_provider: Optional[LLMProviderConfig] = None,
     ):
         self.prompt_environment = prompt_environment
         self.persona = persona
         self.retry_count = retry_count
         self.language = language
 
-        self.query_handler = APIGenerationHandler(
-            model_name=lm_model_name,
-            extra_kwargs=query_generation_extra_kwargs or {},
-        )
-        self.judge_handler = APIGenerationHandler(
-            model_name=judge_model_name,
-            extra_kwargs=judge_extra_kwargs or {},
-        )
+        if llm_provider is not None:
+            self.query_handler = make_generation_handler(
+                llm_provider,
+                "query_generation",
+            )
+            self.judge_handler = make_generation_handler(
+                llm_provider,
+                "judge",
+            )
+        else:
+            self.query_handler = APIGenerationHandler(
+                model_name=lm_model_name,
+                extra_kwargs=query_generation_extra_kwargs or {},
+            )
+            self.judge_handler = APIGenerationHandler(
+                model_name=judge_model_name,
+                extra_kwargs=judge_extra_kwargs or {},
+            )
 
         self.logger = logging.getLogger("LLM Call Tracker")
         self.logger.setLevel(logging.INFO)
@@ -204,6 +218,7 @@ def run_vidore_juicer_generation(input_file, generation_config_path):
         language=language,
         query_generation_extra_kwargs=llm_provider.query_generation_extra_kwargs,
         judge_extra_kwargs=llm_provider.judge_extra_kwargs,
+        llm_provider=llm_provider,
     )
     with open(input_file, "r") as f:
         summaries = json.load(f)

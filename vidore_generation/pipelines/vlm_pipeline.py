@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Literal, Optional
 
 from PIL import Image
 
-from vidore_generation.dtos import DocumentDescription, ImageSection
+from vidore_generation.dtos import DocumentDescription, ImageSection, LLMProviderConfig
 from vidore_generation.filters.summary_filter import SummaryFilter
-from vidore_generation.generation_handlers.api_generation_handler import (
-    APIGenerationHandler,
+from vidore_generation.generation_handlers.factory import (
+    make_generation_handler,
 )
 from vidore_generation.generators.judge import Judge
 from vidore_generation.generators.vlm_query_generator import VLMQueryGenerator
@@ -32,6 +32,7 @@ class VLMPipeline:
         language: str = "english",
         lm_extra_kwargs: Optional[Dict[str, Any]] = None,
         vl_extra_kwargs: Optional[Dict[str, Any]] = None,
+        llm_provider: Optional[LLMProviderConfig] = None,
     ):
         self.dataset_dir = dataset_dir
         self.lm_model_name = lm_model_name
@@ -41,14 +42,24 @@ class VLMPipeline:
         self.combination_iteration_nb = combination_iteration_nb
         self.language = language
         self.section_size = section_size
+        self.llm_provider = llm_provider or LLMProviderConfig(
+            lm_model_name=lm_model_name,
+            vl_model_name=vl_model_name,
+            lm_extra_kwargs=lm_extra_kwargs or {},
+            vl_extra_kwargs=vl_extra_kwargs or {},
+        )
         self.init_logger()
 
         if inference_method == "api":
-            self.vl_generation_handler = APIGenerationHandler(
-                model_name=vl_model_name, logger=self.logger, extra_kwargs=vl_extra_kwargs or {}
+            self.vl_generation_handler = make_generation_handler(
+                self.llm_provider,
+                "vl",
+                logger=self.logger,
             )
-            self.lm_generation_handler = APIGenerationHandler(
-                model_name=lm_model_name, logger=self.logger, extra_kwargs=lm_extra_kwargs or {}
+            self.lm_generation_handler = make_generation_handler(
+                self.llm_provider,
+                "judge",
+                logger=self.logger,
             )
         # elif inference_method == "vllm":
         #     self.generation_handler = VLLMGenerationHandler(model_name=model_name, logger=self.logger)
@@ -61,7 +72,7 @@ class VLMPipeline:
             language=language,
         )
         self.judge = Judge(
-            model_name=lm_model_name,
+            model_name=self.llm_provider.judge_model_name or lm_model_name,
             logger=self.logger,
             generation_handler=self.lm_generation_handler,
             language=language,
