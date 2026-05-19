@@ -10,6 +10,10 @@ from vidore_generation.dtos import Failed, FinalSummary, ImageSection, LLMProvid
 from vidore_generation.generation_handlers.generation_handler import GenerationHandler
 from vidore_generation.generation_schemas import Summary
 from vidore_generation.generators.visual_summarizer import VisualSummarizer
+from vidore_generation.page_filtering.page_manifest import (
+    get_excluded_image_page_numbers_by_filename,
+    load_page_manifest,
+)
 
 
 VISUAL_SUMMARY_DOCUMENT_NAMESPACE = UUID("4a7c56cf-5d73-4b36-a2f4-31ffcf258962")
@@ -72,6 +76,7 @@ class VisualSummaryPipeline:
         filtered_summaries_nb: int = 50,
         overwrite_existing: bool = False,
         document_description: str | None = None,
+        respect_page_manifest: bool = False,
     ):
         if section_size < 1:
             raise ValueError(f"section_size must be at least 1, got {section_size}")
@@ -109,6 +114,8 @@ class VisualSummaryPipeline:
         self.filtered_summaries_nb = filtered_summaries_nb
         self.overwrite_existing = overwrite_existing
         self.document_description = document_description or ""
+        self.respect_page_manifest = respect_page_manifest
+        self.excluded_visual_summary_page_numbers: dict[str, set[int]] | None = None
         self.visual_summaries_path = (
             self.dataset_dir / "visual_summaries" / "visual_summaries.json"
         )
@@ -189,11 +196,38 @@ class VisualSummaryPipeline:
             return document_dirs[: self.max_documents]
         return document_dirs
 
+    def get_excluded_visual_summary_page_numbers(self) -> dict[str, set[int]]:
+        if not self.respect_page_manifest:
+            return {}
+        if self.excluded_visual_summary_page_numbers is not None:
+            return self.excluded_visual_summary_page_numbers
+
+        manifest_path = self.dataset_dir / "page_manifest.jsonl"
+        if not manifest_path.exists():
+            raise FileNotFoundError(
+                "Page manifest not found. Run "
+                "'vidore-generation build-page-manifest --config ...' first: "
+                f"{manifest_path}"
+            )
+        manifest_rows = load_page_manifest(manifest_path)
+        self.excluded_visual_summary_page_numbers = (
+            get_excluded_image_page_numbers_by_filename(
+                manifest_rows,
+                "exclude_from_visual_summaries",
+            )
+        )
+        return self.excluded_visual_summary_page_numbers
+
     def get_document_image_paths(self, document_dir: Path) -> List[Path]:
+        excluded_page_numbers = self.get_excluded_visual_summary_page_numbers().get(
+            document_dir.name,
+            set(),
+        )
         image_paths = [
             path
             for path in document_dir.iterdir()
             if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+            and extract_page_number(path) not in excluded_page_numbers
         ]
         return sorted(image_paths, key=extract_page_number)
 

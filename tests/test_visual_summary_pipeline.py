@@ -163,6 +163,41 @@ def test_image_windows_use_numeric_page_sorting(
     ]
 
 
+def test_respect_page_manifest_excludes_visual_summary_images(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_1.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_2.png")
+    manifest_rows = [
+        {
+            "filename": "manual",
+            "page_number": 2,
+            "image_page_number": 1,
+            "exclude_from_visual_summaries": True,
+        }
+    ]
+    (dataset_dir / "page_manifest.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in manifest_rows) + "\n",
+        encoding="utf-8",
+    )
+    fake_handler = FakeGenerationHandler()
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        respect_page_manifest=True,
+    )
+
+    sections = create_sections(pipeline)
+
+    assert [section.page_numbers for section in sections] == [[0], [2]]
+
+
 def test_run_exports_vidore_compatible_visual_summaries_without_markdowns(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
