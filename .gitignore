@@ -167,6 +167,8 @@ skypilot/
 *.zip
 models/
 # experiments/
-# *.png
-# *.jpeg
-# *.jpg
+*.png
+*.jpeg
+*.jpg
+
+datascience_dataset/
