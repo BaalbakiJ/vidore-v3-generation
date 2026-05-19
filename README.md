@@ -152,6 +152,20 @@ vidore-generation visual-summaries --config configs/my_dataset.yaml
 
 This command does not run Docling and does not require `markdowns/`. It reads `imgs/<document_name>/<document_name>_<page_number>.png` (also `.jpg` and `.jpeg`) and writes `visual_summaries/visual_summaries.json`, per-document files under `summaries/`, and `filtered_summaries/filtered_summaries.json` for the existing query-generation step.
 
+To optionally skip table-of-contents pages in this image-based flow, first create page metadata:
+
+```bash
+vidore-generation build-page-manifest --config configs/my_dataset.yaml
+```
+
+Then render images with manifest exclusions:
+
+```bash
+vidore-generation create-images my_dataset/pdfs --respect-page-manifest
+```
+
+Set `visual_summary.respect_page_manifest: true` to make `visual-summaries` skip already-rendered images excluded by `page_manifest.jsonl`.
+
 ### Step 5 — Generate queries
 
 ```bash

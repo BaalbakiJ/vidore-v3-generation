@@ -15,6 +15,11 @@ from tqdm import tqdm
 from vidore_generation.dtos import Failed, LLMProviderConfig, Prompt
 from vidore_generation.generation_handlers.factory import make_generation_handler
 from vidore_generation.generation_schemas import Summary
+from vidore_generation.page_filtering.page_manifest import (
+    build_page_manifest as build_page_manifest_files,
+    get_excluded_image_page_numbers_by_filename,
+    load_page_manifest,
+)
 from vidore_generation.pipelines.llm_pipeline import LLMPipeline
 from vidore_generation.pipelines.visual_summary_pipeline import VisualSummaryPipeline
 from vidore_generation.pipelines.vlm_pipeline import VLMPipeline
@@ -43,10 +48,32 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("documents_dir", type=click.Path(exists=True, path_type=Path))
-def create_images(documents_dir: Path):
+@click.option(
+    "--respect-page-manifest",
+    is_flag=True,
+    help="Skip pages excluded by page_manifest.jsonl.",
+)
+def create_images(documents_dir: Path, respect_page_manifest: bool):
     if documents_dir.name != "pdfs":
         raise click.ClickException(
             "create-images expects a path to a directory named 'pdfs'"
+        )
+
+    excluded_page_numbers_by_filename: dict[str, set[int]] = {}
+    if respect_page_manifest:
+        manifest_path = documents_dir.parent / "page_manifest.jsonl"
+        if not manifest_path.exists():
+            raise click.ClickException(
+                "Page manifest not found. Run "
+                "'vidore-generation build-page-manifest --config ...' first: "
+                f"{manifest_path}"
+            )
+        manifest_rows = load_page_manifest(manifest_path)
+        excluded_page_numbers_by_filename = (
+            get_excluded_image_page_numbers_by_filename(
+                manifest_rows,
+                "exclude_from_image_rendering",
+            )
         )
 
     imgs_path = documents_dir.parent / "imgs"
@@ -63,10 +90,42 @@ def create_images(documents_dir: Path):
         doc_folder_path.mkdir(exist_ok=True)
         doc = pdfium.PdfDocument(pdf_path)
         number_of_pages = len(doc)
+        excluded_page_numbers = excluded_page_numbers_by_filename.get(
+            file_stem,
+            set(),
+        )
         for page_number in range(number_of_pages):
+            if page_number in excluded_page_numbers:
+                continue
             page = doc[page_number]
             img_path = doc_folder_path / f"{file_stem}_{page_number}.png"
             page.render(scale=200 / 72).to_pil().save(img_path)
+
+
+@cli.command("build-page-manifest")
+@click.option(
+    "--config",
+    type=click.Path(),
+    callback=load_config,
+    is_eager=True,
+    expose_value=False,
+    help="Path to config file.",
+)
+def build_page_manifest_command(config):
+    dataset_dir = Path(os.path.join(config["documents_dir"], config["dataset_name"]))
+    pdfs_dir = dataset_dir / "pdfs"
+    page_rows, summary_rows = build_page_manifest_files(
+        pdfs_dir=pdfs_dir,
+        output_dir=dataset_dir,
+    )
+    toc_page_count = sum(1 for row in page_rows if row["is_toc_page"])
+
+    click.echo(f"PDFs analyzed: {len(summary_rows)}")
+    click.echo(f"Pages analyzed: {len(page_rows)}")
+    click.echo(f"TOC pages detected: {toc_page_count}")
+    click.echo(f"Page manifest JSONL: {dataset_dir / 'page_manifest.jsonl'}")
+    click.echo(f"Page manifest CSV: {dataset_dir / 'page_manifest.csv'}")
+    click.echo(f"TOC summary CSV: {dataset_dir / 'toc_detection_summary.csv'}")
 
 
 @cli.command()
@@ -200,6 +259,10 @@ def visual_summaries(config):
         document_description=visual_summary_config.get(
             "document_description",
             default_document_description,
+        ),
+        respect_page_manifest=visual_summary_config.get(
+            "respect_page_manifest",
+            False,
         ),
     )
     filtered_summaries = pipeline.run()

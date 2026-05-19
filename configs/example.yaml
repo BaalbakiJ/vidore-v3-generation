@@ -52,4 +52,6 @@ visual_summary:
   max_documents: null
   max_summary_words: 250
   overwrite_existing: false
+  # If true, visual summaries skip pages excluded in page_manifest.jsonl.
+  respect_page_manifest: false
   document_description: "Internal technical, business, product, and reference documents."
