@@ -170,3 +170,6 @@ models/
 # *.png
 # *.jpeg
 # *.jpg
+
+datascience_dataset/
+configs/datascience_dataset.yaml

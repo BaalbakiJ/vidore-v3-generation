@@ -42,3 +42,14 @@ sampling_multi_doc_ratio: 0.5
 
 # Print verbose LLM outputs during generation
 debug: false
+
+# Optional visual summary generation from already-rendered page images in imgs/
+visual_summary:
+  section_size: 1
+  stride: 1
+  max_windows: null
+  max_windows_per_document: null
+  max_documents: null
+  max_summary_words: 250
+  overwrite_existing: false
+  document_description: "Internal technical, business, product, and reference documents."

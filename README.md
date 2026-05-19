@@ -142,6 +142,16 @@ Output folders created under `my_dataset/`:
 | `judgments/` | Quality scores for each summary |
 | `filtered_summaries/` | The final selection used for query generation |
 
+### Optional visual summaries from rendered pages
+
+If `my_dataset/imgs/` already contains rendered page images grouped by document, you can generate ViDoRe-compatible summaries directly from those images:
+
+```bash
+vidore-generation visual-summaries --config configs/my_dataset.yaml
+```
+
+This command does not run Docling and does not require `markdowns/`. It reads `imgs/<document_name>/<document_name>_<page_number>.png` (also `.jpg` and `.jpeg`) and writes `visual_summaries/visual_summaries.json`, per-document files under `summaries/`, and `filtered_summaries/filtered_summaries.json` for the existing query-generation step.
+
 ### Step 5 — Generate queries
 
 ```bash
