@@ -59,6 +59,10 @@ visual_summary:
   # If true, generate combined summaries from visual summaries using the existing SummaryCombinator.
   use_visual_combined_summaries: false
   overwrite_combined_summaries: false
+  # If true, judge candidate visual summaries and filter them using judgment scores.
+  use_visual_summary_judging: false
+  overwrite_judgments: false
+  visual_judgment_min_grade: 4
   max_description_pages: 3
   max_description_words: 150
   overwrite_descriptions: false

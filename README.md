@@ -170,7 +170,11 @@ Set `visual_summary.respect_page_manifest: true` to make `visual-summaries` skip
 
 Set `visual_summary.use_visual_document_descriptions: true` to generate one VLM-based description per document from page images. These are written to `descriptions/<filename>.json` and used as context for visual summaries; `visual_summary.document_description` remains the fallback context.
 
-Set `visual_summary.use_visual_combined_summaries: true` to generate combined summaries from visual summaries using the existing `SummaryCombinator`. Combined summaries are written to `combined_summaries/combined_summaries.json`; this is the visual analogue of the original markdown `llm` combined-summary stage. Judging and filtering of visual summaries will be handled separately in a later task.
+Set `visual_summary.use_visual_combined_summaries: true` to generate combined summaries from visual summaries using the existing `SummaryCombinator`. Combined summaries are written to `combined_summaries/combined_summaries.json`; this is the visual analogue of the original markdown `llm` combined-summary stage.
+
+Set `visual_summary.use_visual_summary_judging: true` to judge candidate visual summaries using the existing `Judge`. Judgments are written to `judgments/judgments.json`, and `filtered_summaries/filtered_summaries.json` is selected from judgment scores instead of simple first-N slicing. This is the visual analogue of the original markdown `llm` judging/filtering stage.
+
+The visual filter prioritizes multi-document combined summaries, same-document combined summaries, then single visual summaries. QREL export and query generation remain separate steps.
 
 ### Step 5 — Generate queries
 
