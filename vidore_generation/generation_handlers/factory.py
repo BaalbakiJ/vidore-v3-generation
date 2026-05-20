@@ -59,6 +59,15 @@ def make_generation_handler(
             region_name=llm_provider.aws_region,
             profile_name=llm_provider.aws_profile,
             logger=logger,
+            retry_count=llm_provider.bedrock_retry_count,
+            max_concurrency=llm_provider.bedrock_max_concurrency,
+            retry_initial_sleep_seconds=(
+                llm_provider.bedrock_retry_initial_sleep_seconds
+            ),
+            retry_backoff_multiplier=llm_provider.bedrock_retry_backoff_multiplier,
+            retry_max_sleep_seconds=llm_provider.bedrock_retry_max_sleep_seconds,
+            usage_log_path=llm_provider.bedrock_usage_log_path,
+            pricing_by_model=llm_provider.bedrock_pricing,
             extra_kwargs=extra_kwargs,
         )
 

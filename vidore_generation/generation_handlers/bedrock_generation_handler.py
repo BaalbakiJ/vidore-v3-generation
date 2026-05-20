@@ -1,20 +1,25 @@
 import asyncio
 import base64
 import binascii
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
+from pathlib import Path
 import sys
+import threading
 import time
 import warnings
 from typing import Any, Literal, TypedDict
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from pydantic import BaseModel
 from pydantic_core import ValidationError
 from tqdm.asyncio import tqdm
 
-from vidore_generation.dtos import Failed, Prompt
+from vidore_generation.dtos import BedrockModelPricing, Failed, Prompt
 from vidore_generation.generation_handlers.generation_handler import GenerationHandler
 from vidore_generation.utils import post_process_output
 
@@ -51,6 +56,56 @@ class BedrockMessage(TypedDict):
 
 class BedrockSystemBlock(TypedDict):
     text: str
+
+
+@dataclass(frozen=True)
+class BedrockUsage:
+    call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float | None = 0.0
+
+
+THROTTLING_ERROR_CODES = {
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "Throttling",
+    "RequestLimitExceeded",
+    "ServiceQuotaExceededException",
+}
+
+
+def _is_throttling_error(error: Exception) -> bool:
+    if not isinstance(error, ClientError):
+        return False
+    error_code = error.response.get("Error", {}).get("Code")
+    return error_code in THROTTLING_ERROR_CODES
+
+
+def _combine_costs(
+    current_cost: float | None,
+    added_cost: float | None,
+) -> float | None:
+    if current_cost is None or added_cost is None:
+        return None
+    return current_cost + added_cost
+
+
+def _combine_usage(
+    current_usage: BedrockUsage,
+    added_usage: BedrockUsage,
+) -> BedrockUsage:
+    return BedrockUsage(
+        call_count=current_usage.call_count + added_usage.call_count,
+        input_tokens=current_usage.input_tokens + added_usage.input_tokens,
+        output_tokens=current_usage.output_tokens + added_usage.output_tokens,
+        total_tokens=current_usage.total_tokens + added_usage.total_tokens,
+        estimated_cost_usd=_combine_costs(
+            current_usage.estimated_cost_usd,
+            added_usage.estimated_cost_usd,
+        ),
+    )
 
 
 def _make_default_logger() -> logging.Logger:
@@ -279,15 +334,30 @@ class BedrockGenerationHandler(GenerationHandler):
         profile_name: str | None = None,
         logger: logging.Logger | None = None,
         retry_count: int = 3,
-        extra_kwargs: dict | None = None,
+        max_concurrency: int = 20,
+        retry_initial_sleep_seconds: float = 60.0,
+        retry_backoff_multiplier: float = 2.0,
+        retry_max_sleep_seconds: float = 300.0,
+        usage_log_path: str | None = None,
+        pricing_by_model: dict[str, BedrockModelPricing] | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
     ):
         self.model_name = model_name
         self.region_name = region_name
         self.profile_name = profile_name
         self.retry_count = retry_count
+        self.max_concurrency = max_concurrency
+        self.retry_initial_sleep_seconds = retry_initial_sleep_seconds
+        self.retry_backoff_multiplier = retry_backoff_multiplier
+        self.retry_max_sleep_seconds = retry_max_sleep_seconds
+        self.usage_log_path = usage_log_path
+        self.pricing_by_model = pricing_by_model or {}
         self.extra_kwargs = extra_kwargs or {}
         self.logger = logger if logger is not None else _make_default_logger()
-        self.cost = 0
+        self.usage = BedrockUsage()
+        self._batch_usage = BedrockUsage()
+        self._usage_lock = threading.Lock()
+        self.cost = 0.0
 
         session_kwargs = {"region_name": region_name}
         if profile_name is not None:
@@ -341,8 +411,205 @@ class BedrockGenerationHandler(GenerationHandler):
         )
         return Failed(error=str(error))
 
+    def _extract_usage_token_count(
+        self,
+        usage_data: dict[str, Any],
+        usage_key: str,
+    ) -> int:
+        raw_value = usage_data.get(usage_key)
+        if raw_value is None:
+            return 0
+        if isinstance(raw_value, int) and not isinstance(raw_value, bool):
+            if raw_value >= 0:
+                return raw_value
+        self.logger.warning(
+            "Invalid Bedrock usage token count",
+            extra={
+                "model_name": self.model_name,
+                "usage_key": usage_key,
+                "usage_value": raw_value,
+            },
+        )
+        return 0
+
+    def _extract_response_usage(self, response: dict[str, Any]) -> BedrockUsage:
+        usage_data = response.get("usage")
+        if usage_data is None:
+            self.logger.debug(
+                "Bedrock response missing usage",
+                extra={"model_name": self.model_name},
+            )
+            return BedrockUsage(call_count=1)
+        if not isinstance(usage_data, dict):
+            self.logger.warning(
+                "Invalid Bedrock usage payload",
+                extra={"model_name": self.model_name, "usage_value": usage_data},
+            )
+            return BedrockUsage(call_count=1)
+
+        input_tokens = self._extract_usage_token_count(usage_data, "inputTokens")
+        output_tokens = self._extract_usage_token_count(usage_data, "outputTokens")
+        if "totalTokens" in usage_data:
+            total_tokens = self._extract_usage_token_count(usage_data, "totalTokens")
+        else:
+            total_tokens = input_tokens + output_tokens
+
+        return BedrockUsage(
+            call_count=1,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
+
+    def _estimate_usage_cost(self, usage: BedrockUsage) -> float | None:
+        pricing = self.pricing_by_model.get(self.model_name)
+        if pricing is None:
+            return None
+        if (
+            pricing.input_per_1k_tokens_usd is None
+            or pricing.output_per_1k_tokens_usd is None
+        ):
+            return None
+        input_cost = usage.input_tokens / 1000 * pricing.input_per_1k_tokens_usd
+        output_cost = usage.output_tokens / 1000 * pricing.output_per_1k_tokens_usd
+        return input_cost + output_cost
+
+    def _model_pricing_is_available(self) -> bool:
+        pricing = self.pricing_by_model.get(self.model_name)
+        if pricing is None:
+            return False
+        return (
+            pricing.input_per_1k_tokens_usd is not None
+            and pricing.output_per_1k_tokens_usd is not None
+        )
+
+    def _record_response_usage(self, response: dict[str, Any]) -> BedrockUsage:
+        extracted_usage = self._extract_response_usage(response)
+        estimated_cost_usd = self._estimate_usage_cost(extracted_usage)
+        response_usage = BedrockUsage(
+            call_count=extracted_usage.call_count,
+            input_tokens=extracted_usage.input_tokens,
+            output_tokens=extracted_usage.output_tokens,
+            total_tokens=extracted_usage.total_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+        )
+        with self._usage_lock:
+            self.usage = _combine_usage(self.usage, response_usage)
+            self._batch_usage = _combine_usage(self._batch_usage, response_usage)
+            self.cost = self.usage.estimated_cost_usd or 0.0
+        return response_usage
+
+    def _get_current_batch_usage(self) -> BedrockUsage:
+        with self._usage_lock:
+            return self._batch_usage
+
+    def _reset_current_batch_usage(self) -> None:
+        with self._usage_lock:
+            self._batch_usage = BedrockUsage()
+
+    def _get_retry_sleep_seconds(self, attempt_index: int) -> float:
+        sleep_seconds = self.retry_initial_sleep_seconds * (
+            self.retry_backoff_multiplier**attempt_index
+        )
+        return min(sleep_seconds, self.retry_max_sleep_seconds)
+
+    def _call_converse_with_retries(self, prompt: Prompt) -> dict[str, Any]:
+        converse_kwargs = self._get_converse_kwargs(prompt)
+        for attempt_index in range(self.retry_count):
+            try:
+                return self.client.converse(**converse_kwargs)
+            except Exception as error:
+                if not _is_throttling_error(error):
+                    raise
+                if attempt_index == self.retry_count - 1:
+                    raise
+                sleep_seconds = self._get_retry_sleep_seconds(attempt_index)
+                self.logger.warning(
+                    "Retrying throttled Bedrock Converse call",
+                    extra={
+                        "model_name": self.model_name,
+                        "attempt": attempt_index + 1,
+                        "retry_limit": self.retry_count,
+                        "sleep_seconds": sleep_seconds,
+                    },
+                    exc_info=True,
+                )
+                time.sleep(sleep_seconds)
+
+        raise RuntimeError("Bedrock Converse retry loop exited unexpectedly")
+
+    def _log_usage_summary(
+        self,
+        batch_usage: BedrockUsage,
+        batch_description: str,
+    ) -> None:
+        if (
+            not self._model_pricing_is_available()
+            or batch_usage.estimated_cost_usd is None
+        ):
+            estimated_cost = "unavailable_missing_pricing"
+        else:
+            estimated_cost = f"{batch_usage.estimated_cost_usd:.4f}"
+        self.logger.info(
+            (
+                "Bedrock usage summary: model=%s batch=%r calls=%s "
+                "input_tokens=%s output_tokens=%s total_tokens=%s "
+                "estimated_cost_usd=%s"
+            ),
+            self.model_name,
+            batch_description,
+            batch_usage.call_count,
+            batch_usage.input_tokens,
+            batch_usage.output_tokens,
+            batch_usage.total_tokens,
+            estimated_cost,
+            extra={
+                "model_name": self.model_name,
+                "batch_description": batch_description,
+                "call_count": batch_usage.call_count,
+                "input_tokens": batch_usage.input_tokens,
+                "output_tokens": batch_usage.output_tokens,
+                "total_tokens": batch_usage.total_tokens,
+                "estimated_cost_usd": batch_usage.estimated_cost_usd,
+            },
+        )
+
+    def _append_usage_log_record(
+        self,
+        batch_usage: BedrockUsage,
+        batch_description: str,
+        effective_max_concurrency: int,
+    ) -> None:
+        if self.usage_log_path is None:
+            return
+
+        pricing_available = self._model_pricing_is_available()
+        usage_log_path = Path(self.usage_log_path)
+        if usage_log_path.parent != Path("."):
+            usage_log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "model_name": self.model_name,
+            "batch_description": batch_description,
+            "call_count": batch_usage.call_count,
+            "input_tokens": batch_usage.input_tokens,
+            "output_tokens": batch_usage.output_tokens,
+            "total_tokens": batch_usage.total_tokens,
+            "estimated_cost_usd": batch_usage.estimated_cost_usd
+            if pricing_available
+            else None,
+            "pricing_available": pricing_available,
+            "max_concurrency": effective_max_concurrency,
+        }
+        with usage_log_path.open("a", encoding="utf-8") as usage_log_file:
+            usage_log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     def generate_single_sample(self, prompt: Prompt) -> Any:
-        response = self.client.converse(**self._get_converse_kwargs(prompt))
+        response = self._call_converse_with_retries(prompt)
+        self._record_response_usage(response)
         try:
             return self._process_response(response, prompt)
         except (ValidationError, json.decoder.JSONDecodeError, ValueError) as error:
@@ -378,31 +645,26 @@ class BedrockGenerationHandler(GenerationHandler):
         semaphore_size: int = 20,
         desc: str = "Generating samples",
     ) -> list[Any]:
-        self.cost = 0
-        retry_count = 0
-        while retry_count < self.retry_count:
-            try:
-                results = asyncio.run(
-                    self.async_generate_multiple_samples(prompts, semaphore_size, desc)
-                )
-                self.logger.info(
-                    "Bedrock cost tracking not implemented",
-                    extra={"model_name": self.model_name, "cost": self.cost},
-                )
-                return results
-            except Exception as error:
-                retry_count += 1
-                self.logger.warning(
-                    "Retrying Bedrock generation after error",
-                    extra={
-                        "model_name": self.model_name,
-                        "retry_count": retry_count,
-                        "retry_limit": self.retry_count,
-                    },
-                    exc_info=True,
-                )
-                if retry_count == self.retry_count:
-                    raise error
-                time.sleep(60)
-
-        raise RuntimeError("Bedrock generation retry loop exited unexpectedly")
+        self.cost = 0.0
+        self._reset_current_batch_usage()
+        effective_semaphore_size = min(semaphore_size, self.max_concurrency)
+        self.logger.debug(
+            "Bedrock request concurrency configured",
+            extra={
+                "model_name": self.model_name,
+                "requested_semaphore_size": semaphore_size,
+                "effective_semaphore_size": effective_semaphore_size,
+                "max_concurrency": self.max_concurrency,
+            },
+        )
+        results = asyncio.run(
+            self.async_generate_multiple_samples(
+                prompts,
+                effective_semaphore_size,
+                desc,
+            )
+        )
+        batch_usage = self._get_current_batch_usage()
+        self._log_usage_summary(batch_usage, desc)
+        self._append_usage_log_record(batch_usage, desc, effective_semaphore_size)
+        return results
