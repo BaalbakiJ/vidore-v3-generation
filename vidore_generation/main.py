@@ -242,6 +242,7 @@ def visual_summaries(config):
         dataset_dir=dataset_dir,
         llm_provider=llm_provider,
         language=config.get("language", "english"),
+        persona=config.get("persona", ""),
         debug=config.get("debug", False),
         section_size=visual_summary_config.get("section_size", 1),
         stride=visual_summary_config.get("stride", 1),
@@ -287,6 +288,18 @@ def visual_summaries(config):
         overwrite_combined_summaries=visual_summary_config.get(
             "overwrite_combined_summaries",
             False,
+        ),
+        use_visual_summary_judging=visual_summary_config.get(
+            "use_visual_summary_judging",
+            False,
+        ),
+        overwrite_judgments=visual_summary_config.get(
+            "overwrite_judgments",
+            False,
+        ),
+        visual_judgment_min_grade=visual_summary_config.get(
+            "visual_judgment_min_grade",
+            4,
         ),
         combination_iteration_nb=config.get("combination_iteration_nb", 20),
         sampling_multi_doc_ratio=config.get("sampling_multi_doc_ratio", 0.5),

@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from vidore_generation.dtos import (
     CombinedSummary,
     DocumentDescription,
+    Failed,
     FinalSummary,
     ImageSection,
     IndexedSummary,
@@ -15,7 +16,7 @@ from vidore_generation.dtos import (
     Prompt,
 )
 from vidore_generation.generation_handlers.generation_handler import GenerationHandler
-from vidore_generation.generation_schemas import Description, Summary
+from vidore_generation.generation_schemas import Description, Judgment, Score, Summary
 from vidore_generation.pipelines import visual_summary_pipeline
 from vidore_generation.pipelines.visual_summary_pipeline import (
     VisualSummaryPipeline,
@@ -88,6 +89,33 @@ class FakeSummaryCombinator:
                 combined_summary="combined visual summary",
             )
         ]
+
+
+class FakeJudge:
+    def __init__(self, judgments: List[Any]) -> None:
+        self.judgments = judgments
+        self.call_count = 0
+        self.summaries: List[FinalSummary] = []
+        self.persona = ""
+
+    def judge_summaries(
+        self,
+        summaries: List[FinalSummary],
+        persona: str,
+    ) -> List[Any]:
+        self.call_count += 1
+        self.summaries = summaries
+        self.persona = persona
+        return self.judgments[: len(summaries)]
+
+
+def make_judgment(grade: int) -> Judgment:
+    return Judgment(
+        information_richness=Score(grade=grade, explanation="x"),
+        persona_relevance=Score(grade=grade, explanation="x"),
+        query_generation_potential=Score(grade=grade, explanation="x"),
+        conceptual_clarity=Score(grade=grade, explanation="x"),
+    )
 
 
 def write_fake_image(path: Path) -> None:
@@ -448,6 +476,7 @@ def test_run_exports_vidore_compatible_visual_summaries_without_markdowns(
     assert document_summaries_path.exists()
     assert filtered_summaries_path.exists()
     assert not (dataset_dir / "combined_summaries").exists()
+    assert not (dataset_dir / "judgments").exists()
 
     exported = json.loads(filtered_summaries_path.read_text(encoding="utf-8"))
     assert len(exported) == 1
@@ -538,6 +567,205 @@ def test_combined_visual_summaries_are_generated_when_enabled(
     assert [item["summary"] for item in exported_document] == [
         "visual summary 0",
         "visual summary 1",
+    ]
+
+
+def test_visual_summary_judging_writes_judgments_and_filtered_summaries(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_1.png")
+    fake_handler = FakeGenerationHandler()
+    fake_combinator = FakeSummaryCombinator()
+    fake_judge = FakeJudge(
+        [
+            make_judgment(5),
+            make_judgment(5),
+            make_judgment(5),
+        ]
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        max_windows=2,
+        filtered_summaries_nb=2,
+        use_visual_combined_summaries=True,
+        use_visual_summary_judging=True,
+        persona="A quality engineer.",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_summary_combinator",
+        lambda: fake_combinator,
+    )
+    monkeypatch.setattr(pipeline, "get_judge", lambda: fake_judge)
+
+    filtered_summaries = pipeline.run()
+
+    judgments_path = dataset_dir / "judgments" / "judgments.json"
+    filtered_summaries_path = (
+        dataset_dir / "filtered_summaries" / "filtered_summaries.json"
+    )
+    assert judgments_path.exists()
+    assert filtered_summaries_path.exists()
+    assert fake_judge.call_count == 1
+    assert fake_judge.persona == "A quality engineer."
+    assert [summary.summary for summary in fake_judge.summaries] == [
+        "combined visual summary",
+        "visual summary 0",
+        "visual summary 1",
+    ]
+    assert [summary.addition_reason for summary in filtered_summaries] == [
+        "visual judged same-document combined summary",
+        "visual judged single summary",
+    ]
+    assert [summary.page_numbers for summary in filtered_summaries] == [
+        [[0], [1]],
+        [[0]],
+    ]
+
+    exported_judgments = json.loads(judgments_path.read_text(encoding="utf-8"))
+    exported_filtered = json.loads(
+        filtered_summaries_path.read_text(encoding="utf-8")
+    )
+    assert len(exported_judgments) == 3
+    assert [item["addition_reason"] for item in exported_filtered] == [
+        "visual judged same-document combined summary",
+        "visual judged single summary",
+    ]
+    assert exported_filtered[0]["page_numbers"] == [[0], [1]]
+
+
+def test_existing_visual_judgments_are_reused(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    fake_handler = FakeGenerationHandler()
+    fake_judge = FakeJudge([make_judgment(1)])
+    judgments_path = dataset_dir / "judgments" / "judgments.json"
+    judgments_path.parent.mkdir(parents=True, exist_ok=True)
+    judgments_path.write_text(
+        json.dumps([json.loads(make_judgment(5).model_dump_json())]),
+        encoding="utf-8",
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        use_visual_summary_judging=True,
+        overwrite_judgments=False,
+        filtered_summaries_nb=1,
+    )
+    monkeypatch.setattr(pipeline, "get_judge", lambda: fake_judge)
+    candidates = [create_final_summary("manual", "visual summary 0", [0])]
+
+    try:
+        filtered_summaries = pipeline.filter_visual_summaries_with_judgments(
+            candidates
+        )
+    finally:
+        pipeline.close_logger()
+
+    assert fake_judge.call_count == 0
+    assert len(filtered_summaries) == 1
+    assert filtered_summaries[0].addition_reason == "visual judged single summary"
+
+
+def test_mismatched_existing_visual_judgments_are_regenerated(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    fake_handler = FakeGenerationHandler()
+    fake_judge = FakeJudge([make_judgment(5), make_judgment(5)])
+    judgments_path = dataset_dir / "judgments" / "judgments.json"
+    judgments_path.parent.mkdir(parents=True, exist_ok=True)
+    judgments_path.write_text(
+        json.dumps([json.loads(make_judgment(5).model_dump_json())]),
+        encoding="utf-8",
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        use_visual_summary_judging=True,
+        overwrite_judgments=False,
+        filtered_summaries_nb=2,
+    )
+    monkeypatch.setattr(pipeline, "get_judge", lambda: fake_judge)
+    candidates = [
+        create_final_summary("manual", "visual summary 0", [0]),
+        create_final_summary("manual", "visual summary 1", [1]),
+    ]
+
+    try:
+        filtered_summaries = pipeline.filter_visual_summaries_with_judgments(
+            candidates
+        )
+    finally:
+        pipeline.close_logger()
+
+    exported_judgments = json.loads(judgments_path.read_text(encoding="utf-8"))
+    assert fake_judge.call_count == 1
+    assert len(exported_judgments) == 2
+    assert [summary.summary for summary in filtered_summaries] == [
+        "visual summary 0",
+        "visual summary 1",
+    ]
+
+
+def test_failed_visual_judgment_becomes_low_score_judgment(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    fake_handler = FakeGenerationHandler()
+    fake_judge = FakeJudge(
+        [
+            Failed(error="judge timeout"),
+            make_judgment(5),
+        ]
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        use_visual_summary_judging=True,
+        filtered_summaries_nb=2,
+    )
+    monkeypatch.setattr(pipeline, "get_judge", lambda: fake_judge)
+    candidates = [
+        create_final_summary("manual", "failed judgment summary", [0]),
+        create_final_summary("manual", "passing judgment summary", [1]),
+    ]
+
+    try:
+        filtered_summaries = pipeline.filter_visual_summaries_with_judgments(
+            candidates
+        )
+    finally:
+        pipeline.close_logger()
+
+    judgments_path = dataset_dir / "judgments" / "judgments.json"
+    exported_judgments = json.loads(judgments_path.read_text(encoding="utf-8"))
+    assert fake_judge.call_count == 1
+    assert [summary.summary for summary in filtered_summaries] == [
+        "passing judgment summary",
+        "failed judgment summary",
+    ]
+    assert [summary.addition_reason for summary in filtered_summaries] == [
+        "visual judged single summary",
+        "visual fallback selected summary",
+    ]
+    assert exported_judgments[0]["information_richness"]["grade"] == 1
+    assert "judge timeout" in exported_judgments[0]["information_richness"][
+        "explanation"
     ]
 
 
