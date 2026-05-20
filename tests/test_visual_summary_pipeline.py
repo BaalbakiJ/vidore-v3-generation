@@ -6,8 +6,11 @@ from uuid import UUID
 from pytest import MonkeyPatch
 
 from vidore_generation.dtos import (
+    CombinedSummary,
     DocumentDescription,
+    FinalSummary,
     ImageSection,
+    IndexedSummary,
     LLMProviderConfig,
     Prompt,
 )
@@ -16,6 +19,7 @@ from vidore_generation.generation_schemas import Description, Summary
 from vidore_generation.pipelines import visual_summary_pipeline
 from vidore_generation.pipelines.visual_summary_pipeline import (
     VisualSummaryPipeline,
+    dump_final_summaries,
     get_document_id,
 )
 
@@ -48,9 +52,61 @@ class FakeGenerationHandler(GenerationHandler):
         ]
 
 
+class FakeSummaryCombinator:
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.documents: List[Any] = []
+        self.random_seeds: List[int] = []
+
+    def combine_summaries(
+        self,
+        documents: List[Any],
+        summaries: List[FinalSummary],
+        random_seeds: List[int],
+    ) -> List[CombinedSummary]:
+        self.call_count += 1
+        self.documents = documents
+        self.random_seeds = random_seeds
+        return [
+            CombinedSummary(
+                summaries=[
+                    IndexedSummary(
+                        summary=summaries[0].summary,
+                        document_id=summaries[0].document_ids[0],
+                        filename=summaries[0].filenames[0],
+                        page_numbers=summaries[0].page_numbers[0],
+                        summary_id=summaries[0].id,
+                    ),
+                    IndexedSummary(
+                        summary=summaries[1].summary,
+                        document_id=summaries[1].document_ids[0],
+                        filename=summaries[1].filenames[0],
+                        page_numbers=summaries[1].page_numbers[0],
+                        summary_id=summaries[1].id,
+                    ),
+                ],
+                combined_summary="combined visual summary",
+            )
+        ]
+
+
 def write_fake_image(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"not a real image")
+
+
+def create_final_summary(
+    filename: str,
+    summary: str,
+    page_numbers: List[int],
+) -> FinalSummary:
+    return FinalSummary(
+        summary=summary,
+        document_ids=[get_document_id(filename)],
+        filenames=[filename],
+        page_numbers=[page_numbers],
+        addition_reason="visual summary from page images",
+    )
 
 
 def create_sections(pipeline: VisualSummaryPipeline) -> List[ImageSection]:
@@ -391,6 +447,7 @@ def test_run_exports_vidore_compatible_visual_summaries_without_markdowns(
     assert visual_summaries_path.exists()
     assert document_summaries_path.exists()
     assert filtered_summaries_path.exists()
+    assert not (dataset_dir / "combined_summaries").exists()
 
     exported = json.loads(filtered_summaries_path.read_text(encoding="utf-8"))
     assert len(exported) == 1
@@ -399,6 +456,222 @@ def test_run_exports_vidore_compatible_visual_summaries_without_markdowns(
     assert exported[0]["page_numbers"] == [[0]]
     assert exported[0]["addition_reason"] == "visual summary from page images"
     assert UUID(exported[0]["document_ids"][0])
+
+
+def test_combined_visual_summaries_are_generated_when_enabled(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_0.png")
+    write_fake_image(dataset_dir / "imgs" / "manual" / "manual_1.png")
+    fake_handler = FakeGenerationHandler()
+    fake_combinator = FakeSummaryCombinator()
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        section_size=1,
+        stride=1,
+        max_windows=2,
+        filtered_summaries_nb=1,
+        use_visual_combined_summaries=True,
+        combination_iteration_nb=3,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_summary_combinator",
+        lambda: fake_combinator,
+    )
+
+    filtered_summaries = pipeline.run()
+
+    combined_summaries_path = (
+        dataset_dir / "combined_summaries" / "combined_summaries.json"
+    )
+    visual_summaries_path = (
+        dataset_dir / "visual_summaries" / "visual_summaries.json"
+    )
+    document_summaries_path = dataset_dir / "summaries" / "manual.json"
+    assert combined_summaries_path.exists()
+    assert len(filtered_summaries) == 1
+    assert filtered_summaries[0].summary == "combined visual summary"
+    assert fake_combinator.call_count == 1
+    assert fake_combinator.random_seeds == [0, 1, 2]
+    assert [
+        (
+            document.id,
+            document.filename,
+            document.content,
+            document.document_description,
+        )
+        for document in fake_combinator.documents
+    ] == [(get_document_id("manual"), "manual", "", None)]
+
+    exported_combined = json.loads(
+        combined_summaries_path.read_text(encoding="utf-8")
+    )
+    assert exported_combined == [
+        {
+            "id": exported_combined[0]["id"],
+            "summary": "combined visual summary",
+            "document_ids": [
+                str(get_document_id("manual")),
+                str(get_document_id("manual")),
+            ],
+            "filenames": ["manual", "manual"],
+            "page_numbers": [[0], [1]],
+            "original_summaries": ["visual summary 0", "visual summary 1"],
+            "judgments": None,
+            "addition_reason": "visual combined summary",
+        }
+    ]
+
+    exported_visual = json.loads(visual_summaries_path.read_text(encoding="utf-8"))
+    exported_document = json.loads(
+        document_summaries_path.read_text(encoding="utf-8")
+    )
+    assert [item["summary"] for item in exported_visual] == [
+        "visual summary 0",
+        "visual summary 1",
+    ]
+    assert [item["summary"] for item in exported_document] == [
+        "visual summary 0",
+        "visual summary 1",
+    ]
+
+
+def test_existing_combined_visual_summaries_are_reused(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    fake_handler = FakeGenerationHandler()
+    fake_combinator = FakeSummaryCombinator()
+    existing_combined_summary = FinalSummary(
+        summary="existing combined",
+        document_ids=[get_document_id("manual"), get_document_id("manual")],
+        filenames=["manual", "manual"],
+        page_numbers=[[0], [1]],
+        original_summaries=["visual summary 0", "visual summary 1"],
+        addition_reason="visual combined summary",
+    )
+    dump_final_summaries(
+        dataset_dir / "combined_summaries" / "combined_summaries.json",
+        [existing_combined_summary],
+    )
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        use_visual_combined_summaries=True,
+        overwrite_combined_summaries=False,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_summary_combinator",
+        lambda: fake_combinator,
+    )
+    summaries = [
+        create_final_summary("manual", "visual summary 0", [0]),
+        create_final_summary("manual", "visual summary 1", [1]),
+    ]
+
+    try:
+        combined_summaries = pipeline.combine_visual_summaries(summaries)
+    finally:
+        pipeline.close_logger()
+
+    assert [summary.summary for summary in combined_summaries] == [
+        "existing combined"
+    ]
+    assert fake_combinator.call_count == 0
+
+
+def test_overwrite_combined_visual_summaries_regenerates(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    fake_handler = FakeGenerationHandler()
+    fake_combinator = FakeSummaryCombinator()
+    existing_combined_summary = FinalSummary(
+        summary="existing combined",
+        document_ids=[get_document_id("manual"), get_document_id("manual")],
+        filenames=["manual", "manual"],
+        page_numbers=[[0], [1]],
+        original_summaries=["visual summary 0", "visual summary 1"],
+        addition_reason="visual combined summary",
+    )
+    combined_summaries_path = (
+        dataset_dir / "combined_summaries" / "combined_summaries.json"
+    )
+    dump_final_summaries(combined_summaries_path, [existing_combined_summary])
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        use_visual_combined_summaries=True,
+        overwrite_combined_summaries=True,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_summary_combinator",
+        lambda: fake_combinator,
+    )
+    summaries = [
+        create_final_summary("manual", "visual summary 0", [0]),
+        create_final_summary("manual", "visual summary 1", [1]),
+    ]
+
+    try:
+        combined_summaries = pipeline.combine_visual_summaries(summaries)
+    finally:
+        pipeline.close_logger()
+
+    assert [summary.summary for summary in combined_summaries] == [
+        "combined visual summary"
+    ]
+    assert fake_combinator.call_count == 1
+    exported_combined = json.loads(combined_summaries_path.read_text(encoding="utf-8"))
+    assert [item["summary"] for item in exported_combined] == [
+        "combined visual summary"
+    ]
+
+
+def test_not_enough_visual_summaries_does_not_crash_combination(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    fake_handler = FakeGenerationHandler()
+    fake_combinator = FakeSummaryCombinator()
+    pipeline = make_pipeline(
+        dataset_dir,
+        fake_handler,
+        monkeypatch,
+        use_visual_combined_summaries=True,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_summary_combinator",
+        lambda: fake_combinator,
+    )
+    summaries = [create_final_summary("manual", "visual summary 0", [0])]
+
+    try:
+        combined_summaries = pipeline.combine_visual_summaries(summaries)
+        filtered_summaries = pipeline.export_outputs(summaries, summaries)
+    finally:
+        pipeline.close_logger()
+
+    assert combined_summaries == []
+    assert fake_combinator.call_count == 0
+    assert len(filtered_summaries) == 1
+    assert (
+        dataset_dir / "filtered_summaries" / "filtered_summaries.json"
+    ).exists()
+    assert not (dataset_dir / "combined_summaries").exists()
 
 
 def test_visual_pipeline_has_no_docling_or_markdown_pipeline_dependency() -> None:

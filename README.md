@@ -152,6 +152,8 @@ vidore-generation visual-summaries --config configs/my_dataset.yaml
 
 This command does not run Docling and does not require `markdowns/`. It reads `imgs/<document_name>/<document_name>_<page_number>.png` (also `.jpg` and `.jpeg`) and writes `visual_summaries/visual_summaries.json`, per-document files under `summaries/`, and `filtered_summaries/filtered_summaries.json` for the existing query-generation step.
 
+Page-numbering convention: in the visual pipeline, `FinalSummary.page_numbers` stores 0-based rendered image page numbers. These match `imgs/<document>/<document>_<page>.png` and `page_manifest.image_page_number`. In `page_manifest.jsonl`, `page_number` is 1-based for human/PDF display.
+
 To optionally skip table-of-contents pages in this image-based flow, first create page metadata:
 
 ```bash
@@ -167,6 +169,8 @@ vidore-generation create-images my_dataset/pdfs --respect-page-manifest
 Set `visual_summary.respect_page_manifest: true` to make `visual-summaries` skip already-rendered images excluded by `page_manifest.jsonl`.
 
 Set `visual_summary.use_visual_document_descriptions: true` to generate one VLM-based description per document from page images. These are written to `descriptions/<filename>.json` and used as context for visual summaries; `visual_summary.document_description` remains the fallback context.
+
+Set `visual_summary.use_visual_combined_summaries: true` to generate combined summaries from visual summaries using the existing `SummaryCombinator`. Combined summaries are written to `combined_summaries/combined_summaries.json`; this is the visual analogue of the original markdown `llm` combined-summary stage. Judging and filtering of visual summaries will be handled separately in a later task.
 
 ### Step 5 — Generate queries
 
