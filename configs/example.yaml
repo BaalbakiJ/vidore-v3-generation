@@ -56,6 +56,9 @@ visual_summary:
   respect_page_manifest: false
   # If true, generate one VLM-based description per document from page images.
   use_visual_document_descriptions: false
+  # If true, generate combined summaries from visual summaries using the existing SummaryCombinator.
+  use_visual_combined_summaries: false
+  overwrite_combined_summaries: false
   max_description_pages: 3
   max_description_words: 150
   overwrite_descriptions: false

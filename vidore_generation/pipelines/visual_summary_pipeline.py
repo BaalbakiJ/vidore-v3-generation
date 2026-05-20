@@ -3,14 +3,17 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 from uuid import UUID, uuid5
 
 from vidore_generation.dtos import (
+    CombinedSummary,
+    Document,
     DocumentDescription,
     Failed,
     FinalSummary,
     ImageSection,
+    IndexedSummary,
     LLMProviderConfig,
 )
 from vidore_generation.generation_handlers.generation_handler import GenerationHandler
@@ -26,8 +29,20 @@ from vidore_generation.page_filtering.page_manifest import (
 )
 
 
+if TYPE_CHECKING:
+    from vidore_generation.generators.summary_combinator import SummaryCombinator
+
+
 VISUAL_SUMMARY_DOCUMENT_NAMESPACE = UUID("4a7c56cf-5d73-4b36-a2f4-31ffcf258962")
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
+
+# Page-numbering convention for the visual pipeline:
+# - page_manifest.page_index is the 0-based PDF library index.
+# - page_manifest.image_page_number is the 0-based rendered image suffix/index.
+# - page_manifest.page_number is the 1-based human/PDF display page number.
+# - FinalSummary.page_numbers stores 0-based image_page_number values so it
+#   matches rendered image filenames like <filename>_<image_page_number>.png
+#   and can be used directly for retrieval/QREL page IDs.
 
 
 def extract_page_number(image_path: Path) -> int:
@@ -91,6 +106,10 @@ class VisualSummaryPipeline:
         max_description_pages: int = 3,
         max_description_words: int = 150,
         overwrite_descriptions: bool = False,
+        use_visual_combined_summaries: bool = False,
+        overwrite_combined_summaries: bool = False,
+        combination_iteration_nb: int = 20,
+        sampling_multi_doc_ratio: float = 0.5,
     ):
         if section_size < 1:
             raise ValueError(f"section_size must be at least 1, got {section_size}")
@@ -121,6 +140,16 @@ class VisualSummaryPipeline:
             raise ValueError(
                 f"max_description_words must be at least 1, got {max_description_words}"
             )
+        if combination_iteration_nb < 0:
+            raise ValueError(
+                "combination_iteration_nb must be at least 0, "
+                f"got {combination_iteration_nb}"
+            )
+        if sampling_multi_doc_ratio < 0.0 or sampling_multi_doc_ratio > 1.0:
+            raise ValueError(
+                "sampling_multi_doc_ratio must be between 0.0 and 1.0, "
+                f"got {sampling_multi_doc_ratio}"
+            )
 
         self.dataset_dir = dataset_dir
         self.imgs_dir = dataset_dir / "imgs"
@@ -141,19 +170,26 @@ class VisualSummaryPipeline:
         self.max_description_pages = max_description_pages
         self.max_description_words = max_description_words
         self.overwrite_descriptions = overwrite_descriptions
+        self.use_visual_combined_summaries = use_visual_combined_summaries
+        self.overwrite_combined_summaries = overwrite_combined_summaries
+        self.combination_iteration_nb = combination_iteration_nb
+        self.sampling_multi_doc_ratio = sampling_multi_doc_ratio
         self.excluded_visual_summary_page_numbers: dict[str, set[int]] | None = None
         self.visual_summaries_path = (
             self.dataset_dir / "visual_summaries" / "visual_summaries.json"
         )
         self.summaries_dir = self.dataset_dir / "summaries"
+        self.combined_summaries_dir = self.dataset_dir / "combined_summaries"
         self.filtered_summaries_path = (
             self.dataset_dir / "filtered_summaries" / "filtered_summaries.json"
         )
 
         self.init_logger()
         self.vl_generation_handler: GenerationHandler | None = None
+        self.lm_generation_handler: GenerationHandler | None = None
         self.visual_summarizer: VisualSummarizer | None = None
         self.visual_document_descriptor: VisualDocumentDescriptor | None = None
+        self.summary_combinator: "SummaryCombinator | None" = None
 
     @property
     def descriptions_dir(self) -> Path:
@@ -167,6 +203,15 @@ class VisualSummaryPipeline:
                 logger=self.logger,
             )
         return self.vl_generation_handler
+
+    def get_lm_generation_handler(self) -> GenerationHandler:
+        if self.lm_generation_handler is None:
+            self.lm_generation_handler = make_generation_handler(
+                self.llm_provider,
+                "lm",
+                logger=self.logger,
+            )
+        return self.lm_generation_handler
 
     def get_visual_summarizer(self) -> VisualSummarizer:
         if self.visual_summarizer is not None:
@@ -195,6 +240,24 @@ class VisualSummaryPipeline:
             max_description_words=self.max_description_words,
         )
         return self.visual_document_descriptor
+
+    def get_summary_combinator(self) -> "SummaryCombinator":
+        if self.summary_combinator is not None:
+            return self.summary_combinator
+
+        from vidore_generation.generators.summary_combinator import SummaryCombinator
+
+        self.summary_combinator = SummaryCombinator(
+            model_name=self.llm_provider.lm_model_name,
+            logger=self.logger,
+            generation_handler=self.get_lm_generation_handler(),
+            combination_iteration_nb=self.combination_iteration_nb,
+            sampling_multi_doc_ratio=self.sampling_multi_doc_ratio,
+            save_folder=str(self.dataset_dir),
+            debug=self.debug,
+            language=self.language,
+        )
+        return self.summary_combinator
 
     def init_logger(self) -> None:
         logs_dir = self.dataset_dir / "logs"
@@ -282,6 +345,9 @@ class VisualSummaryPipeline:
 
     def get_description_path(self, filename: str) -> Path:
         return self.descriptions_dir / f"{filename}.json"
+
+    def get_combined_summaries_path(self) -> Path:
+        return self.combined_summaries_dir / "combined_summaries.json"
 
     def load_document_description(self, filename: str) -> DocumentDescription | None:
         description_path = self.get_description_path(filename)
@@ -444,6 +510,10 @@ class VisualSummaryPipeline:
                         document_description=document_description,
                         images=[],
                         image_paths=[str(path) for path in window_paths],
+                        # Store 0-based rendered image page numbers, matching
+                        # image filenames and page_manifest.image_page_number.
+                        # Human-facing 1-based page numbers can be recovered
+                        # from page_manifest.page_number or by adding 1.
                         page_numbers=[
                             extract_page_number(path) for path in window_paths
                         ],
@@ -494,6 +564,123 @@ class VisualSummaryPipeline:
             )
         return final_summaries
 
+    def create_combination_documents(
+        self,
+        summaries: List[FinalSummary],
+    ) -> List[Document]:
+        filenames = sorted(
+            {
+                filename
+                for summary in summaries
+                for filename in summary.filenames
+            }
+        )
+        return [
+            Document(
+                id=get_document_id(filename),
+                filename=filename,
+                content="",
+                document_description=self.load_document_description(filename),
+            )
+            for filename in filenames
+        ]
+
+    def create_final_combined_summaries(
+        self,
+        combined_summaries: List[CombinedSummary],
+    ) -> List[FinalSummary]:
+        final_summaries: List[FinalSummary] = []
+        for combined_summary in combined_summaries:
+            indexed_summaries: List[IndexedSummary] = combined_summary.summaries
+            final_summaries.append(
+                FinalSummary(
+                    summary=combined_summary.combined_summary,
+                    document_ids=[
+                        indexed_summary.document_id
+                        for indexed_summary in indexed_summaries
+                    ],
+                    filenames=[
+                        indexed_summary.filename
+                        for indexed_summary in indexed_summaries
+                    ],
+                    page_numbers=[
+                        indexed_summary.page_numbers
+                        for indexed_summary in indexed_summaries
+                    ],
+                    original_summaries=[
+                        indexed_summary.summary
+                        for indexed_summary in indexed_summaries
+                    ],
+                    addition_reason="visual combined summary",
+                )
+            )
+        return final_summaries
+
+    def load_visual_combined_summaries(self) -> List[FinalSummary]:
+        return load_final_summaries(self.get_combined_summaries_path())
+
+    def export_visual_combined_summaries(
+        self,
+        combined_summaries: List[FinalSummary],
+    ) -> None:
+        dump_final_summaries(self.get_combined_summaries_path(), combined_summaries)
+        self.logger.info(
+            "Wrote combined visual summaries: %s",
+            self.get_combined_summaries_path(),
+        )
+
+    def combine_visual_summaries(
+        self,
+        summaries: List[FinalSummary],
+    ) -> List[FinalSummary]:
+        if not self.use_visual_combined_summaries:
+            return []
+        if len(summaries) < 2:
+            self.logger.warning(
+                "Skipping visual summary combination: at least 2 summaries are "
+                "required, got %d",
+                len(summaries),
+            )
+            return []
+
+        combined_summaries_path = self.get_combined_summaries_path()
+        if combined_summaries_path.exists() and not self.overwrite_combined_summaries:
+            combined_summaries = self.load_visual_combined_summaries()
+            self.logger.info(
+                "Loaded existing combined visual summaries: %d",
+                len(combined_summaries),
+            )
+            return combined_summaries
+
+        if self.combination_iteration_nb == 0:
+            self.logger.info(
+                "Skipping visual summary combination: combination_iteration_nb is 0"
+            )
+            return []
+
+        documents = self.create_combination_documents(summaries)
+        try:
+            generated_combined_summaries = (
+                self.get_summary_combinator().combine_summaries(
+                    documents,
+                    summaries,
+                    random_seeds=list(range(self.combination_iteration_nb)),
+                )
+            )
+        except (ValueError, AssertionError, IndexError) as error:
+            self.logger.warning(
+                "Skipping visual summary combination because there was not enough "
+                "compatible summary data: %s",
+                error,
+            )
+            return []
+
+        combined_summaries = self.create_final_combined_summaries(
+            generated_combined_summaries
+        )
+        self.export_visual_combined_summaries(combined_summaries)
+        return combined_summaries
+
     def export_document_summaries(self, summaries: List[FinalSummary]) -> None:
         self.summaries_dir.mkdir(parents=True, exist_ok=True)
         summaries_by_filename: Dict[str, List[FinalSummary]] = {}
@@ -508,15 +695,54 @@ class VisualSummaryPipeline:
             dump_final_summaries(output_path, document_summaries)
             self.logger.info("Wrote summaries: %s", output_path)
 
-    def export_outputs(self, summaries: List[FinalSummary]) -> List[FinalSummary]:
-        filtered_summaries = summaries[: self.filtered_summaries_nb]
-
+    def export_visual_summaries(self, summaries: List[FinalSummary]) -> None:
         dump_final_summaries(self.visual_summaries_path, summaries)
         self.logger.info("Wrote visual summaries: %s", self.visual_summaries_path)
         self.export_document_summaries(summaries)
+
+    def export_filtered_summaries(
+        self,
+        candidate_summaries: List[FinalSummary],
+    ) -> List[FinalSummary]:
+        filtered_summaries = candidate_summaries[: self.filtered_summaries_nb]
         dump_final_summaries(self.filtered_summaries_path, filtered_summaries)
         self.logger.info("Wrote filtered summaries: %s", self.filtered_summaries_path)
+        return filtered_summaries
 
+    def export_outputs(
+        self,
+        summaries: List[FinalSummary],
+        candidate_summaries: List[FinalSummary] | None = None,
+    ) -> List[FinalSummary]:
+        final_candidate_summaries = (
+            summaries if candidate_summaries is None else candidate_summaries
+        )
+        self.export_visual_summaries(summaries)
+        return self.export_filtered_summaries(final_candidate_summaries)
+
+    def create_candidate_summaries(
+        self,
+        summaries: List[FinalSummary],
+        combined_summaries: List[FinalSummary],
+    ) -> List[FinalSummary]:
+        if self.use_visual_combined_summaries:
+            return combined_summaries + summaries
+        return summaries
+
+    def export_visual_summary_outputs(
+        self,
+        summaries: List[FinalSummary],
+    ) -> List[FinalSummary]:
+        combined_summaries = self.combine_visual_summaries(summaries)
+        candidate_summaries = self.create_candidate_summaries(
+            summaries,
+            combined_summaries,
+        )
+        filtered_summaries = self.export_outputs(summaries, candidate_summaries)
+        self.logger.info("Single visual summaries: %d", len(summaries))
+        self.logger.info("Combined visual summaries: %d", len(combined_summaries))
+        self.logger.info("Candidate summaries: %d", len(candidate_summaries))
+        self.logger.info("Filtered summaries: %d", len(filtered_summaries))
         return filtered_summaries
 
     def run(self) -> List[FinalSummary]:
@@ -539,7 +765,7 @@ class VisualSummaryPipeline:
                 "Loaded existing visual summaries: %d",
                 len(summaries),
             )
-            filtered_summaries = self.export_outputs(summaries)
+            filtered_summaries = self.export_visual_summary_outputs(summaries)
             self.logger.info(
                 "Successful summaries: %d",
                 len(summaries),
@@ -549,11 +775,11 @@ class VisualSummaryPipeline:
         image_sections = self.create_image_sections()
         if not image_sections:
             self.logger.info("Successful summaries: 0")
-            return self.export_outputs([])
+            return self.export_visual_summary_outputs([])
 
         summary_results = self.get_visual_summarizer().summarize_sections(
             image_sections
         )
         summaries = self.create_final_summaries(image_sections, summary_results)
         self.logger.info("Successful summaries: %d", len(summaries))
-        return self.export_outputs(summaries)
+        return self.export_visual_summary_outputs(summaries)

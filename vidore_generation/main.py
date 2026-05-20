@@ -280,6 +280,16 @@ def visual_summaries(config):
             "overwrite_descriptions",
             False,
         ),
+        use_visual_combined_summaries=visual_summary_config.get(
+            "use_visual_combined_summaries",
+            False,
+        ),
+        overwrite_combined_summaries=visual_summary_config.get(
+            "overwrite_combined_summaries",
+            False,
+        ),
+        combination_iteration_nb=config.get("combination_iteration_nb", 20),
+        sampling_multi_doc_ratio=config.get("sampling_multi_doc_ratio", 0.5),
     )
     filtered_summaries = pipeline.run()
     click.echo(
