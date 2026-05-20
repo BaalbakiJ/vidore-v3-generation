@@ -172,4 +172,7 @@ models/
 # *.jpg
 
 datascience_dataset/
+datascience_dataset_pixtral/
+
 configs/datascience_dataset.yaml
+configs/datascience_dataset_pixtral.yaml

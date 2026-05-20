@@ -235,6 +235,33 @@ Provider-specific parameters (e.g. `top_k` for Fireworks) can be set in `lm_extr
 
 Set the corresponding API key in your `.env` file (see `.env.dist` for the full list).
 
+### Bedrock usage and concurrency
+
+Set `llm_provider.provider: "bedrock"` to use Amazon Bedrock Converse through the centralized Bedrock handler. Token usage is read from each Converse response and logged per batch. Cost is reported only as an estimate, and only when pricing is configured in YAML; prices are not hardcoded because provider pricing can change.
+
+Lower `bedrock_max_concurrency` for models that throttle under parallel load, such as Pixtral. Set `bedrock_usage_log_path` to append one JSONL batch summary per generation batch without logging prompt or document contents.
+
+```yaml
+llm_provider:
+  provider: "bedrock"
+  aws_region: "eu-central-1"
+  lm_model_name: "eu.amazon.nova-2-lite-v1:0"
+  vl_model_name: "eu.mistral.pixtral-large-2502-v1:0"
+  bedrock_max_concurrency: 2
+  bedrock_retry_count: 6
+  bedrock_retry_initial_sleep_seconds: 20.0
+  bedrock_retry_backoff_multiplier: 2.0
+  bedrock_retry_max_sleep_seconds: 180.0
+  bedrock_usage_log_path: "datascience_dataset_pixtral/logs/bedrock_usage.jsonl"
+  bedrock_pricing:
+    eu.amazon.nova-2-lite-v1:0:
+      input_per_1k_tokens_usd: null
+      output_per_1k_tokens_usd: null
+    eu.mistral.pixtral-large-2502-v1:0:
+      input_per_1k_tokens_usd: null
+      output_per_1k_tokens_usd: null
+```
+
 ---
 
 ## Acknowledgement

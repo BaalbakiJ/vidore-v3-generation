@@ -7,6 +7,27 @@ from typing_extensions import override
 from vidore_generation.generation_schemas import Judgment
 
 
+class BedrockModelPricing(BaseModel):
+    input_per_1k_tokens_usd: Optional[float] = None
+    output_per_1k_tokens_usd: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _validate_pricing_values(self) -> "BedrockModelPricing":
+        if (
+            self.input_per_1k_tokens_usd is not None
+            and self.input_per_1k_tokens_usd < 0
+        ):
+            raise ValueError("input_per_1k_tokens_usd must be greater than or equal to 0")
+        if (
+            self.output_per_1k_tokens_usd is not None
+            and self.output_per_1k_tokens_usd < 0
+        ):
+            raise ValueError(
+                "output_per_1k_tokens_usd must be greater than or equal to 0"
+            )
+        return self
+
+
 class LLMProviderConfig(BaseModel):
     """Centralised LLM provider settings read from the config file's llm_provider key."""
 
@@ -26,10 +47,26 @@ class LLMProviderConfig(BaseModel):
     query_generation_extra_kwargs: Dict[str, Any] = Field(default_factory=dict)
     judge_extra_kwargs: Dict[str, Any] = Field(default_factory=dict)
 
+    bedrock_max_concurrency: int = Field(default=20, ge=1)
+    bedrock_retry_count: int = Field(default=3, ge=1)
+    bedrock_retry_initial_sleep_seconds: float = Field(default=60.0, ge=0)
+    bedrock_retry_backoff_multiplier: float = Field(default=2.0, ge=1)
+    bedrock_retry_max_sleep_seconds: float = Field(default=300.0, ge=0)
+    bedrock_usage_log_path: Optional[str] = None
+    bedrock_pricing: Dict[str, BedrockModelPricing] = Field(default_factory=dict)
+
     @model_validator(mode="after")
     def _set_defaults(self) -> "LLMProviderConfig":
         if self.provider == "bedrock" and self.aws_region is None:
             raise ValueError("aws_region is required when provider is bedrock")
+        if (
+            self.bedrock_retry_max_sleep_seconds
+            < self.bedrock_retry_initial_sleep_seconds
+        ):
+            raise ValueError(
+                "bedrock_retry_max_sleep_seconds must be greater than or equal to "
+                "bedrock_retry_initial_sleep_seconds"
+            )
         if self.query_generation_model_name is None:
             self.query_generation_model_name = self.lm_model_name
         if self.judge_model_name is None:
