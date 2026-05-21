@@ -507,6 +507,24 @@ class BedrockGenerationHandler(GenerationHandler):
         with self._usage_lock:
             self._batch_usage = BedrockUsage()
 
+    def start_usage_batch(self) -> None:
+        self._reset_current_batch_usage()
+
+    def finish_usage_batch(
+        self,
+        batch_description: str,
+        effective_max_concurrency: int | None = None,
+    ) -> BedrockUsage:
+        batch_usage = self._get_current_batch_usage()
+        concurrency = (
+            effective_max_concurrency
+            if effective_max_concurrency is not None
+            else self.max_concurrency
+        )
+        self._log_usage_summary(batch_usage, batch_description)
+        self._append_usage_log_record(batch_usage, batch_description, concurrency)
+        return batch_usage
+
     def _get_retry_sleep_seconds(self, attempt_index: int) -> float:
         sleep_seconds = self.retry_initial_sleep_seconds * (
             self.retry_backoff_multiplier**attempt_index
@@ -646,7 +664,7 @@ class BedrockGenerationHandler(GenerationHandler):
         desc: str = "Generating samples",
     ) -> list[Any]:
         self.cost = 0.0
-        self._reset_current_batch_usage()
+        self.start_usage_batch()
         effective_semaphore_size = min(semaphore_size, self.max_concurrency)
         self.logger.debug(
             "Bedrock request concurrency configured",
@@ -664,7 +682,5 @@ class BedrockGenerationHandler(GenerationHandler):
                 desc,
             )
         )
-        batch_usage = self._get_current_batch_usage()
-        self._log_usage_summary(batch_usage, desc)
-        self._append_usage_log_record(batch_usage, desc, effective_semaphore_size)
+        self.finish_usage_batch(desc, effective_semaphore_size)
         return results

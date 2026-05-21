@@ -173,6 +173,8 @@ models/
 
 datascience_dataset/
 datascience_dataset_pixtral/
+datascience_ai_algorithms/
 
 configs/datascience_dataset.yaml
 configs/datascience_dataset_pixtral.yaml
+configs/datascience_ai_algorithms.yaml
