@@ -239,7 +239,9 @@ Set the corresponding API key in your `.env` file (see `.env.dist` for the full 
 
 Set `llm_provider.provider: "bedrock"` to use Amazon Bedrock Converse through the centralized Bedrock handler. Token usage is read from each Converse response and logged per batch. Cost is reported only as an estimate, and only when pricing is configured in YAML; prices are not hardcoded because provider pricing can change.
 
-Lower `bedrock_max_concurrency` for models that throttle under parallel load, such as Pixtral. Set `bedrock_usage_log_path` to append one JSONL batch summary per generation batch without logging prompt or document contents.
+Lower `bedrock_max_concurrency` for models that throttle under parallel load, such as Pixtral. Set `bedrock_usage_log_path` to append one JSONL batch summary per generation batch without logging prompt or document contents. Use a dataset-specific path, for example `datascience_ai_algorithms/logs/bedrock_usage.jsonl`.
+
+Usage JSONL records are written for standard `generate_multiple_samples(...)` batches and for the ViDoRe Juicer query-generation and query-judgment batches, even though those Juicer stages use custom async single-sample loops. Expected query-stage rows include `Generating queries`, `Generating judgments`, `Filtering queries`, and `Rephrasing queries`.
 
 ```yaml
 llm_provider:
@@ -252,7 +254,7 @@ llm_provider:
   bedrock_retry_initial_sleep_seconds: 20.0
   bedrock_retry_backoff_multiplier: 2.0
   bedrock_retry_max_sleep_seconds: 180.0
-  bedrock_usage_log_path: "datascience_dataset_pixtral/logs/bedrock_usage.jsonl"
+  bedrock_usage_log_path: "datascience_ai_algorithms/logs/bedrock_usage.jsonl"
   bedrock_pricing:
     eu.amazon.nova-2-lite-v1:0:
       input_per_1k_tokens_usd: null

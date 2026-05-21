@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import threading
@@ -339,5 +340,69 @@ def test_usage_jsonl_log_records_batch_summary(tmp_path: Path) -> None:
             "estimated_cost_usd": pytest.approx(0.0002),
             "pricing_available": True,
             "max_concurrency": 2,
+        }
+    ]
+
+
+def test_finish_usage_batch_records_async_single_sample_usage(
+    tmp_path: Path,
+) -> None:
+    usage_log_path = tmp_path / "logs" / "bedrock_usage.jsonl"
+    handler = _make_handler(
+        client=FakeBedrockClient(
+            [
+                _make_response(
+                    '{"summary": "Bedrock works"}',
+                    {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15},
+                ),
+                _make_response(
+                    '{"summary": "Bedrock still works"}',
+                    {"inputTokens": 20, "outputTokens": 15, "totalTokens": 35},
+                ),
+            ]
+        ),
+        retry_count=1,
+        max_concurrency=2,
+        pricing_by_model={
+            "test-model": BedrockModelPricing(
+                input_per_1k_tokens_usd=0.01,
+                output_per_1k_tokens_usd=0.02,
+            )
+        },
+        usage_log_path=str(usage_log_path),
+    )
+    prompt = Prompt(
+        messages=[{"role": "user", "content": "Return JSON"}],
+        arguments={"pydantic_schema": Summary},
+    )
+
+    handler.start_usage_batch()
+    first_result = asyncio.run(handler.async_generate_single_sample(prompt))
+    second_result = asyncio.run(handler.async_generate_single_sample(prompt))
+    batch_usage = handler.finish_usage_batch("Generating queries", 1)
+
+    assert isinstance(first_result, Summary)
+    assert isinstance(second_result, Summary)
+    assert batch_usage.call_count == 2
+    assert batch_usage.input_tokens == 30
+    assert batch_usage.output_tokens == 20
+    assert batch_usage.total_tokens == 50
+    assert batch_usage.estimated_cost_usd == pytest.approx(0.0007)
+    records = [
+        json.loads(line)
+        for line in usage_log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert records == [
+        {
+            "timestamp": records[0]["timestamp"],
+            "model_name": "test-model",
+            "batch_description": "Generating queries",
+            "call_count": 2,
+            "input_tokens": 30,
+            "output_tokens": 20,
+            "total_tokens": 50,
+            "estimated_cost_usd": pytest.approx(0.0007),
+            "pricing_available": True,
+            "max_concurrency": 1,
         }
     ]

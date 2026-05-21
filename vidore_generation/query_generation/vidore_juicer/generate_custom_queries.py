@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional, cast
 
 import jinja2
 import litellm
@@ -37,6 +37,42 @@ class QueryToJudge(BaseModel):
     filenames: List[str]
     page_numbers: List[List[int]]
     judgment: Optional[Judgment] = None
+
+
+def _start_usage_batch_if_supported(handler: object) -> None:
+    start_usage_batch = getattr(handler, "start_usage_batch", None)
+    if callable(start_usage_batch):
+        typed_start_usage_batch = cast(Callable[[], None], start_usage_batch)
+        typed_start_usage_batch()
+
+
+def _get_effective_batch_concurrency(
+    handler: object,
+    requested_concurrency: int,
+) -> int:
+    max_concurrency = getattr(handler, "max_concurrency", requested_concurrency)
+    if not isinstance(max_concurrency, int):
+        raise TypeError("Batch usage max_concurrency must be an integer")
+    return min(requested_concurrency, max_concurrency)
+
+
+def _finish_usage_batch_if_supported(
+    handler: object,
+    batch_description: str,
+    requested_concurrency: int,
+) -> None:
+    finish_usage_batch = getattr(handler, "finish_usage_batch", None)
+    if not callable(finish_usage_batch):
+        return
+    effective_concurrency = _get_effective_batch_concurrency(
+        handler,
+        requested_concurrency,
+    )
+    typed_finish_usage_batch = cast(
+        Callable[[str, int], object],
+        finish_usage_batch,
+    )
+    typed_finish_usage_batch(batch_description, effective_concurrency)
 
 
 class QueryGenerator:
@@ -121,15 +157,23 @@ class QueryGenerator:
         self,
         summaries: List[str],
     ):
+        requested_concurrency = 50
+        batch_description = "Generating queries"
         retry_count = 0
         while retry_count < self.retry_count:
             try:
+                _start_usage_batch_if_supported(self.query_handler)
                 results = asyncio.run(
                     self.async_generate_queries(
                         [SectionSummary(summary=summary) for summary in summaries],
-                        50,
-                        "Generating queries",
+                        requested_concurrency,
+                        batch_description,
                     )
+                )
+                _finish_usage_batch_if_supported(
+                    self.query_handler,
+                    batch_description,
+                    requested_concurrency,
                 )
                 self.logger.info(f"Cost: {self.query_handler.cost:.4f}$")
                 return results
@@ -178,15 +222,23 @@ class QueryGenerator:
         self,
         queries_to_judge: List[QueryToJudge],
     ):
+        requested_concurrency = 2
+        batch_description = "Generating judgments"
         retry_count = 0
         while retry_count < self.retry_count:
             try:
+                _start_usage_batch_if_supported(self.judge_handler)
                 results = asyncio.run(
                     self.async_generate_judgments(
                         queries_to_judge,
-                        2,
-                        "Generating judgments",
+                        requested_concurrency,
+                        batch_description,
                     )
+                )
+                _finish_usage_batch_if_supported(
+                    self.judge_handler,
+                    batch_description,
+                    requested_concurrency,
                 )
                 self.logger.info(f"Cost: {self.judge_handler.cost:.4f}$")
                 return results
