@@ -178,3 +178,6 @@ datascience_ai_algorithms/
 configs/datascience_dataset.yaml
 configs/datascience_dataset_pixtral.yaml
 configs/datascience_ai_algorithms.yaml
+
+configs/divisions/
+division_datasets/
